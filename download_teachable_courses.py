@@ -267,17 +267,18 @@ def download_attachments(types, section=None):
 def main():
     parser = argparse.ArgumentParser(description="Fetch course details from Teachable API.")
     
-    parser.add_argument('--course', default="Fachausbildung zum Coach für Ketogene Ernährung", help="Name of the course.")
-    parser.add_argument('--section', default=None, help="Name of the section.")
-    parser.add_argument('--download', action='store_true', help="Flag to download attachments.")
-    parser.add_argument('--types', choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
+    parser.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
+    parser.add_argument('--id', "-i", default=None, help="Alternative: Course ID.")
+    parser.add_argument('--section', "-s", default=None, help="Name of the section.")
+    parser.add_argument('--download', "-d", action='store_true', help="Flag to download attachments.")
+    parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
 
     
     args = parser.parse_args()
     
     if args.download:
         download_attachments(args.types, args.section)
-    elif not args.course and not args.section:
+    elif not args.id and not args.course and not args.section:
         # if no argument is passed, fetch courses and save to csv
         courses = fetch_courses()
         save_course_list_to_csv(courses)
