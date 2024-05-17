@@ -62,12 +62,48 @@ def handle_rate_limit(url, headers):
 
 
 def fetch_course_id(course_name):
+    
     url = f"{BASE_URL}/courses?name={course_name}"
     response = handle_rate_limit(url, HEADERS)
     data = response.json()
     if data.get("courses"):
         return data["courses"][0]["id"]
     return None
+def fetch_courses():
+    courses = []
+    page = 1
+    per_page = 20 # that is the max
+    
+    while True:
+        url = f"{BASE_URL}/courses?page={page}&per={per_page}"
+        response = handle_rate_limit(url, HEADERS)
+        data = response.json()
+        
+        for course in data["courses"]:
+            courses.append({
+                "id": course["id"],
+                "name": course["name"],
+                "heading": course["heading"],
+                "is_published": course["is_published"]
+            })
+        
+        if data["meta"]["number_of_pages"] <= page:
+            break
+        
+        page += 1
+    
+    return courses
+
+def save_course_list_to_csv(courses):
+
+    # Dynamically generate fieldnames from courses
+    fieldnames = courses[0].keys()
+
+    with open('course_list.csv', 'w', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+
+        writer.writeheader()
+        writer.writerows(courses)
 
 
 def get_course_details(course_id):
@@ -241,6 +277,14 @@ def main():
     
     if args.download:
         download_attachments(args.types, args.section)
+    elif not args.course and not args.section:
+        # if no argument is passed, fetch courses and save to csv
+        courses = fetch_courses()
+        save_course_list_to_csv(courses)
+        print("Course list saved to course_list.csv")
+        # print the first 5 courses
+        for course in courses[:5]:
+            print(course)
     else:
         get_course_csv(args.course, args.section)
 
