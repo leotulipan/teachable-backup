@@ -37,9 +37,36 @@ def safe_filename(filename):
     # Replace spaces with underscores
     filename = filename.replace(' ', '_')
     
+    # no commas
+    filename = filename.replace(',', '')
+    
+    # _-_ to -
+    filename = filename.replace('_-_', '-')
+    
     # Ensure filename is not longer than 30 characters
     return filename[:30]
 
+def safe_dirname(filename):
+    # Remove unsafe characters
+    filename = re.sub(r'[\\/*?:"<>|]', '', filename)
+    
+    # Replace spaces with underscores
+    filename = filename.replace(' ', '_')
+    
+    # no commas
+    filename = filename.replace(',', '')
+    
+    # _-_ to -
+    filename = filename.replace('_-_', '-')
+    
+    # Ensure filename is not longer than 255 characters
+    return filename[:255]
+
+def get_course_name(course_id):
+    url = f"{BASE_URL}/courses/{course_id}"
+    response = handle_rate_limit(url, HEADERS)
+    data = response.json()
+    return data["course"]["name"]
 
 def handle_rate_limit(url, headers):
     while True:
@@ -59,7 +86,6 @@ def handle_rate_limit(url, headers):
             time.sleep(20)
             
     return response
-
 
 def fetch_course_id(course_name):
     
@@ -99,62 +125,74 @@ def save_course_list_to_csv(courses):
     # Dynamically generate fieldnames from courses
     fieldnames = courses[0].keys()
 
-    with open('course_list.csv', 'w', newline='', encoding='utf-8') as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+    with open("all_courses_data.csv", 'w', newline='', encoding='windows-1252') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
 
         writer.writeheader()
         writer.writerows(courses)
-
 
 def get_course_details(course_id):
     url = f"{BASE_URL}/courses/{course_id}"
     response = handle_rate_limit(url, HEADERS)
     return response.json()
 
-
 def get_lecture_details(course_id, lecture_id):
     url = f"{BASE_URL}/courses/{course_id}/lectures/{lecture_id}"
     response = handle_rate_limit(url, HEADERS)
     return response.json()
 
-
 def save_text_attachment_as_html(attachment_id, text_content):
     with open(f"{attachment_id}.html", "w", encoding="utf-8") as file:
         file.write(text_content)
 
+def save_to_csv(course_content):
+    
+    course_content = sorted(course_content, key=lambda x: (x['section_position'], x['lecture_position']))
+    # Dynamically generate fieldnames from courses
+    fieldnames = course_content[0].keys()
+    
+    with open(f"course_data.csv", 'w', newline='', encoding='windows-1252') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
 
-def save_to_csv(rows):
-    with open('course_data.csv', 'w', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            "course_id", 
-            "course_name", 
-            "lecture_section_id", 
-            "lecture_section_position",
-            "lecture_section_name", 
-            "lecture_id", 
-            "lecture_position", 
-            "lecture_name", 
-            "lecture_is_published", 
-            "lecture_attachment_id",
-            "lecture_attachment_position",
-            "lecture_attachment_name", 
-            "lecture_attachment_kind", 
-            "lecture_attachmenturl"
-        ])
-        writer.writerows(rows)
+        writer.writeheader()
+        writer.writerows(course_content)
+         
 
+    # with open('course_data.csv', 'w', newline='', encoding='utf-8') as file:
+    #     writer = csv.writer(file)
+    #     writer.writerow([
+    #         "course_id", 
+    #         "course_name", 
+    #         "lecture_section_id", 
+    #         "lecture_section_position",
+    #         "lecture_section_name", 
+    #         "lecture_id", 
+    #         "lecture_position", 
+    #         "lecture_name", 
+    #         "lecture_is_published", 
+    #         "lecture_attachment_id",
+    #         "lecture_attachment_position",
+    #         "lecture_attachment_name", 
+    #         "lecture_attachment_kind", 
+    #         "lecture_attachmenturl"
+    #     ])
+    #     writer.writerows(rows)        
 
-def get_course_csv(course_name, section_name):
-    # course_name = "Fachausbildung zum Coach für Ketogene Ernährung"
-    # section_name = "" # "Modul 3"
-    course_id = fetch_course_id(course_name)
+def get_course_csv(course_name=None, course_id=None, section_name=None):
+    if not course_name and not course_id:
+        raise ValueError("Either course_name or course_id must be provided.")
+    
+    if course_name and course_id:
+        raise ValueError("Only one of course_name or course_id should be provided.")
+    
+    if course_name:
+        course_id = fetch_course_id(course_name)
+    
     print(f"Fetching details for course ID: {course_id}")
     course_details = get_course_details(course_id)
 
     rows = []
     for section in course_details["course"]["lecture_sections"]:
-        #  The condition not section_name will be True if section_name is empty (or None), and section['name'] == section_name will be True if the names match. The or operator ensures that the code inside the if block will execute if either of the conditions is True.
         if not section_name or section['name'] == section_name:
             print(f"Processing section: {section['name']}")
             for lecture in section["lectures"]:
@@ -174,22 +212,22 @@ def get_course_csv(course_name, section_name):
                             f"{attachment['text']}"
                         )
 
-                    row = [
-                        course_id,
-                        course_details["course"]["name"],
-                        section["id"],
-                        section["position"],
-                        section["name"],
-                        lecture_details["lecture"]["id"],
-                        lecture_details["lecture"]["position"],
-                        lecture_details["lecture"]["name"],
-                        lecture_details["lecture"]["is_published"],
-                        attachment["id"],
-                        attachment["position"],
-                        attachment["name"],
-                        attachment["kind"],
-                        attachment["url"]
-                    ]
+                    row = {
+                        "course_id": course_id,
+                        "course_name": course_details["course"]["name"],
+                        "section_id": section["id"],
+                        "section_position": section["position"],
+                        "section_name": section["name"],
+                        "lecture_id": lecture_details["lecture"]["id"],
+                        "lecture_position": lecture_details["lecture"]["position"],
+                        "lecture_name": lecture_details["lecture"]["name"],
+                        "lecture_is_published": lecture_details["lecture"]["is_published"],
+                        "attachment_id": attachment["id"],
+                        "attachment_position": attachment["position"],
+                        "attachment_name": attachment["name"],
+                        "attachment_kind": attachment["kind"],
+                        "attachment_url": attachment["url"]
+                    }
                     rows.append(row)
         else:
             print(f"Skipping section: {section['name']}")
@@ -212,15 +250,15 @@ def download_attachments(types, section=None):
     # Filter out types based on user input
     valid_types = [type_mapping[t] for t in types]
     
-    with open('course_data.csv', 'r', encoding='utf-8') as file:
-        reader = csv.DictReader(file)
+    with open('course_data.csv', 'r', encoding='windows-1252') as file:
+        reader = csv.DictReader(file, delimiter=';', quotechar='"')
         for row in reader:
             # Check if section is set and matches
-            if section and row['lecture_section_name'] != section:
+            if section and row['section_name'] != section:
                 continue
             
             # Check if attachment kind is in valid types
-            if row['lecture_attachment_kind'] not in valid_types:
+            if row['attachment_kind'] not in valid_types:
                 continue
             
 
@@ -228,10 +266,10 @@ def download_attachments(types, section=None):
             retries = 0
             while retries < MAX_RETRIES:
                 try:
-                    response = requests.get(row['lecture_attachmenturl'], stream=True)
+                    response = requests.get(row['attachment_url'], stream=True)
                     response.raise_for_status()  # Raise error on failed requests
 
-                    filename = f"{row['lecture_section_position'].zfill(2)}_{row['lecture_position'].zfill(2)}_{str(int(row['lecture_attachment_position'])).zfill(2)}_{row['lecture_attachment_id']}_{row['lecture_attachment_name']}"
+                    filename = f"{row['section_position'].zfill(2)}_{row['lecture_position'].zfill(2)}_{str(int(row['attachment_position'])).zfill(2)}_{row['attachment_id']}_{row['attachment_name']}"
 
                     # Check if file exists and has size greater than 0
                     if os.path.exists(filename) and os.path.getsize(filename) > 0:
@@ -263,7 +301,6 @@ def download_attachments(types, section=None):
                         sys.exit(1)
 
 
-
 def main():
     parser = argparse.ArgumentParser(description="Fetch course details from Teachable API.")
     
@@ -277,6 +314,12 @@ def main():
     args = parser.parse_args()
     
     if args.download:
+        if args.id:
+            args.course = get_course_name(args.id)
+        print(f"Fetching course details for: '{args.course}'")
+        course_dirname = safe_dirname(args.course)
+        os.makedirs(course_dirname, exist_ok=True)
+        os.chdir(course_dirname)
         download_attachments(args.types, args.section)
     elif not args.id and not args.course and not args.section:
         # if no argument is passed, fetch courses and save to csv
@@ -287,7 +330,13 @@ def main():
         for course in courses[:5]:
             print(course)
     else:
-        get_course_csv(args.course, args.section)
+        if args.id:
+            args.course = get_course_name(args.id)
+        print(f"Fetching course details for: '{args.course}'")
+        course_dirname = safe_dirname(args.course)
+        os.makedirs(course_dirname, exist_ok=True)
+        os.chdir(course_dirname)
+        get_course_csv(course_name=args.course, section_name=args.section)
 
 
 if __name__ == "__main__":
