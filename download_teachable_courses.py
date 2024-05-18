@@ -88,14 +88,33 @@ def handle_rate_limit(url, headers):
     return response
 
 def fetch_course_id(course_name):
-    
+    """
+    Fetches the course ID for a given course name.
+
+    Args:
+        course_name (str): The name of the course.
+
+    Returns:
+        int or None: The ID of the course if found, None otherwise.
+    """
     url = f"{BASE_URL}/courses?name={course_name}"
     response = handle_rate_limit(url, HEADERS)
     data = response.json()
     if data.get("courses"):
         return data["courses"][0]["id"]
     return None
+
 def fetch_courses():
+    """
+    Fetches the courses from the Teachable platform.
+
+    Returns:
+        list: A list of dictionaries representing the fetched courses. Each dictionary contains the following keys:
+            - id (int): The ID of the course.
+            - name (str): The name of the course.
+            - heading (str): The heading of the course.
+            - is_published (bool): Indicates whether the course is published or not.
+    """
     courses = []
     page = 1
     per_page = 20 # that is the max
@@ -145,8 +164,16 @@ def save_text_attachment_as_html(attachment_id, text_content):
     with open(f"{attachment_id}.html", "w", encoding="utf-8") as file:
         file.write(text_content)
 
+def clean_text(text):
+    return text.encode('windows-1252', errors='replace').decode('windows-1252')
+
 def save_to_csv(course_content):
     
+    for row in course_content:
+        for key, value in row.items():
+            if isinstance(value, str):
+                row[key] = clean_text(value)
+
     course_content = sorted(course_content, key=lambda x: (x['section_position'], x['lecture_position']))
     # Dynamically generate fieldnames from courses
     fieldnames = course_content[0].keys()
@@ -300,6 +327,16 @@ def download_attachments(types, section=None):
                         print(f"Failed to download {filename} after {MAX_RETRIES} attempts.")
                         sys.exit(1)
 
+def process_course(course_name, section_name):
+    course_dirname = safe_dirname(course_name)
+    if os.path.exists(os.path.join(course_dirname, 'course_data.csv')):
+        print(f"'course_data.csv' already exists in '{course_dirname}'. Skipping...")
+        return
+    print(f"Fetching course details for: '{course_name}'")
+    os.makedirs(course_dirname, exist_ok=True)
+    os.chdir(course_dirname)
+    get_course_csv(course_name=course_name, section_name=section_name)
+    os.chdir('..')
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch course details from Teachable API.")
@@ -309,6 +346,7 @@ def main():
     parser.add_argument('--section', "-s", default=None, help="Name of the section.")
     parser.add_argument('--download', "-d", action='store_true', help="Flag to download attachments.")
     parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
+    parser.add_argument('--all', '-a', action='store_true', help="Flag to fetch details for all courses.")
 
     
     args = parser.parse_args()
@@ -316,10 +354,11 @@ def main():
     if args.download:
         if args.id:
             args.course = get_course_name(args.id)
-        print(f"Fetching course details for: '{args.course}'")
-        course_dirname = safe_dirname(args.course)
-        os.makedirs(course_dirname, exist_ok=True)
-        os.chdir(course_dirname)
+        process_course(args.course, args.section)
+        # print(f"Fetching course details for: '{args.course}'")
+        # course_dirname = safe_dirname(args.course)
+        # os.makedirs(course_dirname, exist_ok=True)
+        # os.chdir(course_dirname)
         download_attachments(args.types, args.section)
     elif not args.id and not args.course and not args.section:
         # if no argument is passed, fetch courses and save to csv
@@ -329,14 +368,15 @@ def main():
         # print the first 5 courses
         for course in courses[:5]:
             print(course)
+        if args.all:
+            # fetch details for all courses
+            for course in courses:
+                args.course = get_course_name(course['id'])
+                process_course(args.course, args.section)
     else:
         if args.id:
             args.course = get_course_name(args.id)
-        print(f"Fetching course details for: '{args.course}'")
-        course_dirname = safe_dirname(args.course)
-        os.makedirs(course_dirname, exist_ok=True)
-        os.chdir(course_dirname)
-        get_course_csv(course_name=args.course, section_name=args.section)
+        process_course(args.course, args.section)
 
 
 if __name__ == "__main__":
