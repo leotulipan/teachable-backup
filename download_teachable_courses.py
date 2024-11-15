@@ -8,6 +8,7 @@ import sys
 import time
 import re
 import argparse
+import pathlib
 
 MAX_RETRIES = 5  # maximum number of retries
 DELAY_FACTOR = 3  # delay multiplier
@@ -179,20 +180,20 @@ def fetch_courses() -> list[dict]:
     
     return courses
 
-def save_course_list_to_csv(courses: list[dict]) -> None:
+def save_course_list_to_csv(courses: list[dict], base_dir: pathlib.Path) -> None:
     """
     Save the list of courses to a CSV file.
 
     Args:
         courses (list[dict]): List of course dictionaries to save
+        base_dir (pathlib.Path): Base directory to save the CSV file
     """
-
     # Dynamically generate fieldnames from courses
     fieldnames = courses[0].keys()
-
-    with open("all_courses_data.csv", 'w', newline='', encoding='utf-8') as file:
+    
+    csv_path = base_dir / "all_courses_data.csv"
+    with open(csv_path, 'w', newline='', encoding='utf-8') as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
-
         writer.writeheader()
         writer.writerows(courses)
 
@@ -225,15 +226,17 @@ def get_lecture_details(course_id: int, lecture_id: int) -> dict:
     response = handle_rate_limit(url, HEADERS)
     return response.json()
 
-def save_text_attachment_as_html(attachment_id: str, text_content: str) -> None:
+def save_text_attachment_as_html(attachment_id: str, text_content: str, base_dir: pathlib.Path) -> None:
     """
     Save a text attachment as an HTML file.
 
     Args:
         attachment_id (str): Identifier for the attachment
         text_content (str): The text content to save as HTML
+        base_dir (pathlib.Path): Base directory to save the HTML file
     """
-    with open(f"{attachment_id}.html", "w", encoding="utf-8") as file:
+    file_path = base_dir / f"{attachment_id}.html"
+    with open(file_path, "w", encoding="utf-8") as file:
         file.write(text_content)
 
 def clean_text(text: str) -> str:
@@ -248,12 +251,13 @@ def clean_text(text: str) -> str:
     """
     return text.encode('windows-1252', errors='replace').decode('windows-1252')
 
-def save_to_csv(course_content: list[dict]) -> None:
+def save_to_csv(course_content: list[dict], base_dir: pathlib.Path) -> None:
     """
     Save course content to a CSV file.
 
     Args:
         course_content (list[dict]): List of dictionaries containing course content
+        base_dir (pathlib.Path): Base directory to save the CSV file
     """
     
     for row in course_content:
@@ -264,36 +268,15 @@ def save_to_csv(course_content: list[dict]) -> None:
     course_content = sorted(course_content, key=lambda x: (x['section_position'], x['lecture_position']))
     # Dynamically generate fieldnames from courses
     fieldnames = course_content[0].keys()
-    
-    # previously used windows-1252
-    with open(f"course_data.csv", 'w', newline='', encoding='utf-8') as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
 
+    # previously used windows-1252
+    csv_path = base_dir / "course_data.csv"
+    with open(csv_path, 'w', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
         writer.writeheader()
         writer.writerows(course_content)
-         
 
-    # with open('course_data.csv', 'w', newline='', encoding='utf-8') as file:
-    #     writer = csv.writer(file)
-    #     writer.writerow([
-    #         "course_id", 
-    #         "course_name", 
-    #         "lecture_section_id", 
-    #         "lecture_section_position",
-    #         "lecture_section_name", 
-    #         "lecture_id", 
-    #         "lecture_position", 
-    #         "lecture_name", 
-    #         "lecture_is_published", 
-    #         "lecture_attachment_id",
-    #         "lecture_attachment_position",
-    #         "lecture_attachment_name", 
-    #         "lecture_attachment_kind", 
-    #         "lecture_attachmenturl"
-    #     ])
-    #     writer.writerows(rows)        
-
-def get_course_csv(course_name: str | None = None, course_id: int | None = None, section_name: str | None = None) -> None:
+def get_course_csv(course_name: str | None = None, course_id: int | None = None, section_name: str | None = None, base_dir: pathlib.Path = pathlib.Path()) -> None:
     """
     Generate a CSV file containing course details and save attachments.
 
@@ -301,9 +284,7 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
         course_name (str, optional): Name of the course
         course_id (int, optional): ID of the course
         section_name (str, optional): Name of the section to filter by
-
-    Raises:
-        ValueError: If neither course_name nor course_id is provided, or if both are provided
+        base_dir (pathlib.Path): Base directory to save files
     """
     if not course_name and not course_id:
         raise ValueError("Either course_name or course_id must be provided.")
@@ -333,10 +314,8 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
 
                 for attachment in lecture_details["lecture"]["attachments"]:
                     if (attachment["kind"] == "text" or attachment["kind"] == "code_embed") and attachment["text"]:
-                        save_text_attachment_as_html(
-                            f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}", 
-                            f"{attachment['text']}"
-                        )
+                        filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}"
+                        save_text_attachment_as_html(filename, f"{attachment['text']}", base_dir)
 
                     row = {
                         "course_id": course_id,
@@ -358,19 +337,21 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
         else:
             print(f"Skipping section: {section['name']}")
             
-    save_to_csv(rows)
+    save_to_csv(rows, base_dir)
 
-def download_attachments(types: list[str], section: str | None = None) -> None:
+def download_attachments(types: list[str], base_dir: pathlib.Path, section: str | None = None) -> None:
     """
     Download course attachments based on specified types and section.
 
     Args:
         types (list[str]): List of attachment types to download ('pdf', 'file', 'image', 'video')
+        base_dir (pathlib.Path): Base directory to save downloaded files
         section (str, optional): Section name to filter downloads by
     """
     # Check if "course_data.csv" exists
-    if not os.path.exists("course_data.csv"):
-        raise FileNotFoundError("course_data.csv not found in the current working directory.")
+    csv_path = base_dir / "course_data.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(f"course_data.csv not found in {base_dir}")
     
     # Mapping for argparse types to CSV 'lecture_attachment_kind' values
     type_mapping = {
@@ -383,7 +364,7 @@ def download_attachments(types: list[str], section: str | None = None) -> None:
     # Filter out types based on user input
     valid_types = [type_mapping[t] for t in types]
     
-    with open('course_data.csv', 'r', encoding='utf-8') as file:
+    with open(csv_path, 'r', encoding='utf-8') as file:
         reader = csv.DictReader(file, delimiter=';', quotechar='"')
         for row in reader:
             # Check if section is set and matches
@@ -402,7 +383,7 @@ def download_attachments(types: list[str], section: str | None = None) -> None:
                     response = requests.get(row['attachment_url'], stream=True)
                     response.raise_for_status()  # Raise error on failed requests
 
-                    filename = f"{row['section_position'].zfill(2)}_{row['lecture_position'].zfill(2)}_{str(int(row['attachment_position'])).zfill(2)}_{row['attachment_id']}_{row['attachment_name']}"
+                    filename = base_dir / f"{row['section_position'].zfill(2)}_{row['lecture_position'].zfill(2)}_{str(int(row['attachment_position'])).zfill(2)}_{row['attachment_id']}_{row['attachment_name']}"
 
                     # Check if file exists and has size greater than 0
                     if os.path.exists(filename) and os.path.getsize(filename) > 0:
@@ -433,23 +414,25 @@ def download_attachments(types: list[str], section: str | None = None) -> None:
                         print(f"Failed to download {filename} after {MAX_RETRIES} attempts.")
                         sys.exit(1)
 
-def process_course(course_name: str, section_name: str | None) -> None:
+def process_course(course_name: str, section_name: str | None, base_dir: pathlib.Path) -> None:
     """
     Process a course by creating a directory and generating course data.
 
     Args:
         course_name (str): Name of the course to process
         section_name (str, optional): Name of the section to filter by
+        base_dir (pathlib.Path): Base directory to save course files
     """
     course_dirname = safe_dirname(course_name)
-    if os.path.exists(os.path.join(course_dirname, 'course_data.csv')):
-        print(f"'course_data.csv' already exists in '{course_dirname}'. Skipping...")
+    course_dir = base_dir / course_dirname
+    course_dir.mkdir(parents=True, exist_ok=True)
+    
+    if (course_dir / 'course_data.csv').exists():
+        print(f"'course_data.csv' already exists in '{course_dir}'. Skipping...")
         return
+    
     print(f"Fetching course details for: '{course_name}'")
-    os.makedirs(course_dirname, exist_ok=True)
-    os.chdir(course_dirname)
-    get_course_csv(course_name=course_name, section_name=section_name)
-    os.chdir('..')
+    get_course_csv(course_name=course_name, section_name=section_name, base_dir=course_dir)
 
 def main() -> None:
     """
@@ -470,24 +453,25 @@ def main() -> None:
     parser.add_argument('--download', "-d", action='store_true', help="Flag to download attachments.")
     parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
     parser.add_argument('--all', '-a', action='store_true', help="Flag to fetch details for all courses.")
-
+    parser.add_argument('--dir', '-o', type=pathlib.Path, default=pathlib.Path(),
+                       help="Directory to save output files (default: current directory)")
     
     args = parser.parse_args()
+    
+    # Create base directory if it doesn't exist
+    args.dir.mkdir(parents=True, exist_ok=True)
     
     if args.download:
         if args.id:
             args.course = get_course_name(args.id)
-        process_course(args.course, args.section)
-        # print(f"Fetching course details for: '{args.course}'")
-        course_dirname = safe_dirname(args.course)
-        # os.makedirs(course_dirname, exist_ok=True)
-        os.chdir(course_dirname)
-        download_attachments(args.types, args.section)
+        process_course(args.course, args.section, args.dir)
+        course_dir = args.dir / safe_dirname(args.course)
+        download_attachments(args.types, course_dir, args.section)
     elif not args.id and not args.course and not args.section:
         # if no argument is passed, fetch courses and save to csv
         courses = fetch_courses()
-        save_course_list_to_csv(courses)
-        print("Course list saved to course_list.csv")
+        save_course_list_to_csv(courses, args.dir)
+        print(f"Course list saved to {args.dir}/all_courses_data.csv")
         # print the first 5 courses
         for course in courses[:5]:
             print(course)
@@ -495,11 +479,11 @@ def main() -> None:
             # fetch details for all courses
             for course in courses:
                 args.course = get_course_name(course['id'])
-                process_course(args.course, args.section)
+                process_course(args.course, args.section, args.dir)
     else:
         if args.id:
             args.course = get_course_name(args.id)
-        process_course(args.course, args.section)
+        process_course(args.course, args.section, args.dir)
 
 
 if __name__ == "__main__":
