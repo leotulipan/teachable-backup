@@ -18,7 +18,7 @@ INITIAL_DELAY = 30  # initial delay in seconds
 # os.chdir(script_dir)
 
 load_dotenv()
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("TEACHABLE_API_KEY")
 HEADERS = {
     "accept": "application/json",
     "apiKey": API_KEY
@@ -190,7 +190,7 @@ def save_course_list_to_csv(courses: list[dict]) -> None:
     # Dynamically generate fieldnames from courses
     fieldnames = courses[0].keys()
 
-    with open("all_courses_data.csv", 'w', newline='', encoding='windows-1252') as file:
+    with open("all_courses_data.csv", 'w', newline='', encoding='utf-8') as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
 
         writer.writeheader()
@@ -265,7 +265,8 @@ def save_to_csv(course_content: list[dict]) -> None:
     # Dynamically generate fieldnames from courses
     fieldnames = course_content[0].keys()
     
-    with open(f"course_data.csv", 'w', newline='', encoding='windows-1252') as file:
+    # previously used windows-1252
+    with open(f"course_data.csv", 'w', newline='', encoding='utf-8') as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
 
         writer.writeheader()
@@ -382,7 +383,7 @@ def download_attachments(types: list[str], section: str | None = None) -> None:
     # Filter out types based on user input
     valid_types = [type_mapping[t] for t in types]
     
-    with open('course_data.csv', 'r', encoding='windows-1252') as file:
+    with open('course_data.csv', 'r', encoding='utf-8') as file:
         reader = csv.DictReader(file, delimiter=';', quotechar='"')
         for row in reader:
             # Check if section is set and matches
@@ -462,8 +463,9 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(description="Fetch course details from Teachable API.")
     
-    parser.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
-    parser.add_argument('--id', "-i", default=None, help="Alternative: Course ID.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
+    group.add_argument('--id', "-i", default=None, help="Alternative: Course ID.")
     parser.add_argument('--section', "-s", default=None, help="Name of the section.")
     parser.add_argument('--download', "-d", action='store_true', help="Flag to download attachments.")
     parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
