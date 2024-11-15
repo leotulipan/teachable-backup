@@ -265,7 +265,7 @@ def save_to_csv(course_content: list[dict], base_dir: pathlib.Path) -> None:
             if isinstance(value, str):
                 row[key] = clean_text(value)
 
-    course_content = sorted(course_content, key=lambda x: (x['section_position'], x['lecture_position']))
+    course_content = sorted(course_content, key=lambda x: (x['module_position'], x['lecture_position']))
     # Dynamically generate fieldnames from courses
     fieldnames = course_content[0].keys()
 
@@ -299,9 +299,9 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
     course_details = get_course_details(course_id)
 
     rows = []
-    for section in course_details["course"]["lecture_sections"]:
+    for section in sorted(course_details["course"]["lecture_sections"], key=lambda x: x["position"]):
         if not section_name or section['name'] == section_name:
-            print(f"Processing Module: {section['name']}")
+            print(f"Processing Module: '{section['name']}' with {len(section["lectures"])} lectures.")
             for lecture in section["lectures"]:
                 lecture_details = get_lecture_details(course_id, lecture["id"])
                 
@@ -312,6 +312,15 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                     print(lecture_details)
                     continue
 
+                print(f" Lecture '{lecture_details["lecture"]["name"]}' found with {len(lecture_details['lecture']['attachments'])} attachments.")
+                if not lecture_details["lecture"]["attachments"]:
+                    lecture_details['lecture']['attachments'] = [{
+                        "id": "0",
+                        "position": "1",
+                        "name": "No Content Yet",
+                        "kind": "empty",
+                        "url": ""
+                    }]
                 for attachment in lecture_details["lecture"]["attachments"]:
                     if (attachment["kind"] == "text" or attachment["kind"] == "code_embed") and attachment["text"]:
                         filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}"
@@ -320,9 +329,9 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                     row = {
                         "course_id": course_id,
                         "course_name": course_details["course"]["name"],
-                        "section_id": section["id"],
-                        "section_position": section["position"],
-                        "section_name": section["name"],
+                        "module_id": section["id"],
+                        "module_position": section["position"],
+                        "module_name": section["name"],
                         "lecture_id": lecture_details["lecture"]["id"],
                         "lecture_position": lecture_details["lecture"]["position"],
                         "lecture_name": lecture_details["lecture"]["name"],
@@ -414,7 +423,7 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, section: str 
                         print(f"Failed to download {filename} after {MAX_RETRIES} attempts.")
                         sys.exit(1)
 
-def process_course(course_id: int | str, section_name: str | None, base_dir: pathlib.Path) -> None:
+def process_course(course_id: int | str, section_name: str | None, base_dir: pathlib.Path, overwrite: bool = False) -> None:
     """
     Process a course by creating a directory and generating course data.
 
@@ -422,6 +431,7 @@ def process_course(course_id: int | str, section_name: str | None, base_dir: pat
         course_id (int | str): ID or name of the course to process
         section_name (str, optional): Name of the section to filter by
         base_dir (pathlib.Path): Base directory to save course files
+        overwrite (bool): If True, overwrite existing course_data.csv instead of renaming it
     """
     # Convert course name to ID if a string was provided
     if isinstance(course_id, str):
@@ -437,7 +447,7 @@ def process_course(course_id: int | str, section_name: str | None, base_dir: pat
     course_dir.mkdir(parents=True, exist_ok=True)
     
     course_data_path = course_dir / 'course_data.csv'
-    if course_data_path.exists():
+    if course_data_path.exists() and not overwrite:
         created_time = time.strftime('%Y-%m-%d', time.gmtime(os.path.getctime(course_data_path)))
         new_course_data_path = course_dir / f"{created_time}_course_data.csv"
         course_data_path.rename(new_course_data_path)
@@ -534,6 +544,8 @@ def main() -> None:
                        help="Directory to save output files (default: current directory)")
     parser.add_argument('--check-renames', type=pathlib.Path,
                        help="Path to old course list CSV to check for needed directory renames")
+    parser.add_argument('--overwrite', '-w', action='store_true',
+                       help="Overwrite existing course_data.csv instead of renaming it")
     
     args = parser.parse_args()
     
@@ -547,7 +559,7 @@ def main() -> None:
         
     if args.download:
         course_id = args.id if args.id is not None else args.course
-        course_dir = process_course(course_id, args.section, args.dir)
+        course_dir = process_course(course_id, args.section, args.dir, args.overwrite)
         # course_name = get_course_name(args.id) if args.id else args.course
         # course_dir = args.dir / safe_dirname(course_name)
         download_attachments(args.types, course_dir, args.section)
@@ -562,10 +574,10 @@ def main() -> None:
         if args.all:
             # fetch details for all courses
             for course in courses:
-                process_course(course['id'], args.section, args.dir)
+                process_course(course['id'], args.section, args.dir, args.overwrite)
     else:
         course_id = args.id if args.id is not None else args.course
-        process_course(course_id, args.section, args.dir)
+        process_course(course_id, args.section, args.dir, args.overwrite)
 
 
 if __name__ == "__main__":
