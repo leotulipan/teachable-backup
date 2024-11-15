@@ -26,7 +26,17 @@ HEADERS = {
 
 BASE_URL = "https://developers.teachable.com/v1"
 
-def safe_filename(filename):
+def safe_filename(filename: str) -> str:
+    """
+    Sanitize a filename by removing unsafe characters and enforcing length limits.
+
+    Args:
+        filename (str): The original filename to sanitize
+
+    Returns:
+        str: A sanitized filename that is safe for file system operations, 
+             truncated to 30 characters
+    """
 
     if not filename:
         return ""
@@ -46,7 +56,18 @@ def safe_filename(filename):
     # Ensure filename is not longer than 30 characters
     return filename[:30]
 
-def safe_dirname(filename):
+def safe_dirname(filename: str) -> str:
+    """
+    Sanitize a directory name by removing unsafe characters and enforcing length limits.
+
+    Args:
+        filename (str): The original directory name to sanitize
+
+    Returns:
+        str: A sanitized directory name that is safe for file system operations,
+             truncated to 255 characters
+    """
+
     # Remove unsafe characters
     filename = re.sub(r'[\\/*?:"<>|]', '', filename)
     
@@ -62,13 +83,32 @@ def safe_dirname(filename):
     # Ensure filename is not longer than 255 characters
     return filename[:255]
 
-def get_course_name(course_id):
+def get_course_name(course_id: int) -> str:
+    """
+    Fetch the name of a course using its ID.
+
+    Args:
+        course_id (int): The ID of the course to look up
+
+    Returns:
+        str: The name of the course
+    """
     url = f"{BASE_URL}/courses/{course_id}"
     response = handle_rate_limit(url, HEADERS)
     data = response.json()
     return data["course"]["name"]
 
-def handle_rate_limit(url, headers):
+def handle_rate_limit(url: str, headers: dict) -> requests.Response:
+    """
+    Make an API request with automatic rate limit handling.
+
+    Args:
+        url (str): The API endpoint URL
+        headers (dict): Request headers including API key
+
+    Returns:
+        requests.Response: The API response object after successful request
+    """
     while True:
         response = requests.get(url, headers=headers)
         
@@ -87,15 +127,15 @@ def handle_rate_limit(url, headers):
             
     return response
 
-def fetch_course_id(course_name):
+def fetch_course_id(course_name: str) -> int | None:
     """
-    Fetches the course ID for a given course name.
+    Fetch the course ID for a given course name.
 
     Args:
-        course_name (str): The name of the course.
+        course_name (str): The name of the course to look up
 
     Returns:
-        int or None: The ID of the course if found, None otherwise.
+        int | None: The course ID if found, None otherwise
     """
     url = f"{BASE_URL}/courses?name={course_name}"
     response = handle_rate_limit(url, HEADERS)
@@ -104,16 +144,16 @@ def fetch_course_id(course_name):
         return data["courses"][0]["id"]
     return None
 
-def fetch_courses():
+def fetch_courses() -> list[dict]:
     """
-    Fetches the courses from the Teachable platform.
+    Fetch all available courses from the Teachable platform.
 
     Returns:
-        list: A list of dictionaries representing the fetched courses. Each dictionary contains the following keys:
-            - id (int): The ID of the course.
-            - name (str): The name of the course.
-            - heading (str): The heading of the course.
-            - is_published (bool): Indicates whether the course is published or not.
+        list[dict]: List of course dictionaries containing:
+            - id (int): Course ID
+            - name (str): Course name
+            - heading (str): Course heading
+            - is_published (bool): Publication status
     """
     courses = []
     page = 1
@@ -139,7 +179,13 @@ def fetch_courses():
     
     return courses
 
-def save_course_list_to_csv(courses):
+def save_course_list_to_csv(courses: list[dict]) -> None:
+    """
+    Save the list of courses to a CSV file.
+
+    Args:
+        courses (list[dict]): List of course dictionaries to save
+    """
 
     # Dynamically generate fieldnames from courses
     fieldnames = courses[0].keys()
@@ -150,24 +196,65 @@ def save_course_list_to_csv(courses):
         writer.writeheader()
         writer.writerows(courses)
 
-def get_course_details(course_id):
+def get_course_details(course_id: int) -> dict:
+    """
+    Fetch detailed information about a specific course.
+
+    Args:
+        course_id (int): The ID of the course
+
+    Returns:
+        dict: Detailed course information including sections and lectures
+    """
     url = f"{BASE_URL}/courses/{course_id}"
     response = handle_rate_limit(url, HEADERS)
     return response.json()
 
-def get_lecture_details(course_id, lecture_id):
+def get_lecture_details(course_id: int, lecture_id: int) -> dict:
+    """
+    Fetch detailed information about a specific lecture.
+
+    Args:
+        course_id (int): The ID of the course containing the lecture
+        lecture_id (int): The ID of the lecture
+
+    Returns:
+        dict: Detailed lecture information including attachments
+    """
     url = f"{BASE_URL}/courses/{course_id}/lectures/{lecture_id}"
     response = handle_rate_limit(url, HEADERS)
     return response.json()
 
-def save_text_attachment_as_html(attachment_id, text_content):
+def save_text_attachment_as_html(attachment_id: str, text_content: str) -> None:
+    """
+    Save a text attachment as an HTML file.
+
+    Args:
+        attachment_id (str): Identifier for the attachment
+        text_content (str): The text content to save as HTML
+    """
     with open(f"{attachment_id}.html", "w", encoding="utf-8") as file:
         file.write(text_content)
 
-def clean_text(text):
+def clean_text(text: str) -> str:
+    """
+    Clean text by handling encoding issues.
+
+    Args:
+        text (str): The text to clean
+
+    Returns:
+        str: The cleaned text, encoded and decoded using windows-1252
+    """
     return text.encode('windows-1252', errors='replace').decode('windows-1252')
 
-def save_to_csv(course_content):
+def save_to_csv(course_content: list[dict]) -> None:
+    """
+    Save course content to a CSV file.
+
+    Args:
+        course_content (list[dict]): List of dictionaries containing course content
+    """
     
     for row in course_content:
         for key, value in row.items():
@@ -205,7 +292,18 @@ def save_to_csv(course_content):
     #     ])
     #     writer.writerows(rows)        
 
-def get_course_csv(course_name=None, course_id=None, section_name=None):
+def get_course_csv(course_name: str | None = None, course_id: int | None = None, section_name: str | None = None) -> None:
+    """
+    Generate a CSV file containing course details and save attachments.
+
+    Args:
+        course_name (str, optional): Name of the course
+        course_id (int, optional): ID of the course
+        section_name (str, optional): Name of the section to filter by
+
+    Raises:
+        ValueError: If neither course_name nor course_id is provided, or if both are provided
+    """
     if not course_name and not course_id:
         raise ValueError("Either course_name or course_id must be provided.")
     
@@ -261,7 +359,14 @@ def get_course_csv(course_name=None, course_id=None, section_name=None):
             
     save_to_csv(rows)
 
-def download_attachments(types, section=None):
+def download_attachments(types: list[str], section: str | None = None) -> None:
+    """
+    Download course attachments based on specified types and section.
+
+    Args:
+        types (list[str]): List of attachment types to download ('pdf', 'file', 'image', 'video')
+        section (str, optional): Section name to filter downloads by
+    """
     # Check if "course_data.csv" exists
     if not os.path.exists("course_data.csv"):
         raise FileNotFoundError("course_data.csv not found in the current working directory.")
@@ -327,7 +432,14 @@ def download_attachments(types, section=None):
                         print(f"Failed to download {filename} after {MAX_RETRIES} attempts.")
                         sys.exit(1)
 
-def process_course(course_name, section_name):
+def process_course(course_name: str, section_name: str | None) -> None:
+    """
+    Process a course by creating a directory and generating course data.
+
+    Args:
+        course_name (str): Name of the course to process
+        section_name (str, optional): Name of the section to filter by
+    """
     course_dirname = safe_dirname(course_name)
     if os.path.exists(os.path.join(course_dirname, 'course_data.csv')):
         print(f"'course_data.csv' already exists in '{course_dirname}'. Skipping...")
@@ -338,7 +450,16 @@ def process_course(course_name, section_name):
     get_course_csv(course_name=course_name, section_name=section_name)
     os.chdir('..')
 
-def main():
+def main() -> None:
+    """
+    Main function to handle command-line arguments and execute course operations.
+    
+    Supports the following operations:
+    - Fetch and save list of all courses
+    - Process specific courses by name or ID
+    - Download course attachments
+    - Filter operations by section
+    """
     parser = argparse.ArgumentParser(description="Fetch course details from Teachable API.")
     
     parser.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
@@ -356,9 +477,9 @@ def main():
             args.course = get_course_name(args.id)
         process_course(args.course, args.section)
         # print(f"Fetching course details for: '{args.course}'")
-        # course_dirname = safe_dirname(args.course)
+        course_dirname = safe_dirname(args.course)
         # os.makedirs(course_dirname, exist_ok=True)
-        # os.chdir(course_dirname)
+        os.chdir(course_dirname)
         download_attachments(args.types, args.section)
     elif not args.id and not args.course and not args.section:
         # if no argument is passed, fetch courses and save to csv
