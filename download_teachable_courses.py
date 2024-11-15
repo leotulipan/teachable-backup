@@ -414,16 +414,25 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, section: str 
                         print(f"Failed to download {filename} after {MAX_RETRIES} attempts.")
                         sys.exit(1)
 
-def process_course(course_name: str, section_name: str | None, base_dir: pathlib.Path) -> None:
+def process_course(course_id: int | str, section_name: str | None, base_dir: pathlib.Path) -> None:
     """
     Process a course by creating a directory and generating course data.
 
     Args:
-        course_name (str): Name of the course to process
+        course_id (int | str): ID or name of the course to process
         section_name (str, optional): Name of the section to filter by
         base_dir (pathlib.Path): Base directory to save course files
     """
-    course_dirname = safe_dirname(course_name)
+    # Convert course name to ID if a string was provided
+    if isinstance(course_id, str):
+        course_name = course_id
+        course_id = fetch_course_id(course_name)
+        if course_id is None:
+            raise ValueError(f"Could not find course with name: {course_name}")
+    
+    # Get course name for directory creation
+    course_name = get_course_name(course_id)
+    course_dirname = f"{course_id} - {safe_dirname(course_name)}"
     course_dir = base_dir / course_dirname
     course_dir.mkdir(parents=True, exist_ok=True)
     
@@ -432,7 +441,72 @@ def process_course(course_name: str, section_name: str | None, base_dir: pathlib
         return
     
     print(f"Fetching course details for: '{course_name}'")
-    get_course_csv(course_name=course_name, section_name=section_name, base_dir=course_dir)
+    get_course_csv(course_id=course_id, section_name=section_name, base_dir=course_dir)
+
+    return course_dir
+
+def check_course_renames(old_course_list: pathlib.Path, base_dir: pathlib.Path) -> None:
+    """
+    Check for course name changes and print rename commands.
+    
+    Args:
+        old_course_list (pathlib.Path): Path to the old course list CSV
+        base_dir (pathlib.Path): Base directory containing course directories
+    
+    Raises:
+        FileNotFoundError: If old_course_list or all_courses_data.csv doesn't exist
+        ValueError: If required columns are missing in CSVs
+    """
+    # Check if old course list exists and is a CSV
+    if not old_course_list.exists() or old_course_list.suffix.lower() != '.csv':
+        raise FileNotFoundError(f"Old course list not found or not a CSV: {old_course_list}")
+    
+    # Check if new course list exists
+    new_course_list = base_dir / "all_courses_data.csv"
+    if not new_course_list.exists():
+        raise FileNotFoundError(f"New course list not found: {new_course_list}")
+    
+    # Read old course list
+    old_courses = {}
+    with open(old_course_list, 'r', encoding='utf-8') as file:
+        reader = csv.DictReader(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
+        if 'id' not in reader.fieldnames or 'name' not in reader.fieldnames:
+            raise ValueError("Old course list must contain 'id' and 'name' columns")
+        for row in reader:
+            old_courses[int(row['id'])] = row['name']
+    
+    # Read new course list
+    new_courses = {}
+    with open(new_course_list, 'r', encoding='utf-8') as file:
+        reader = csv.DictReader(file, delimiter=';', quotechar='"', quoting=csv.QUOTE_ALL)
+        if 'id' not in reader.fieldnames or 'name' not in reader.fieldnames:
+            raise ValueError("New course list must contain 'id' and 'name' columns")
+        for row in reader:
+            new_courses[int(row['id'])] = row['name']
+    
+    # Check for name changes and directory existence
+    for course_id, old_name in old_courses.items():
+        if course_id in new_courses:
+            new_name = new_courses[course_id]
+            old_dirname = safe_dirname(old_name)
+            new_dirname = f"{course_id} - {safe_dirname(new_name)}"
+            
+            old_path = base_dir / old_dirname
+            new_path = base_dir / new_dirname
+            
+            # Only print if old directory exists and names are different
+            if old_path.exists() and old_dirname != new_dirname:
+                if not new_path.exists():
+                    old_path.rename(new_path)
+                    print(f"Directory renamed:")
+                    print(f"  From: {old_path}")
+                    print(f"  To:   {new_path}")
+                    print()
+                else:
+                    print(f"Rename skipped, target directory already exists:")
+                    print(f"  From: {old_path}")
+                    print(f"  To:   {new_path}")
+                    print()
 
 def main() -> None:
     """
@@ -448,24 +522,31 @@ def main() -> None:
     
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
-    group.add_argument('--id', "-i", default=None, help="Alternative: Course ID.")
+    group.add_argument('--id', "-i", type=int, default=None, help="Alternative: Course ID.")
     parser.add_argument('--section', "-s", default=None, help="Name of the section.")
     parser.add_argument('--download', "-d", action='store_true', help="Flag to download attachments.")
     parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
     parser.add_argument('--all', '-a', action='store_true', help="Flag to fetch details for all courses.")
     parser.add_argument('--dir', '-o', type=pathlib.Path, default=pathlib.Path(),
                        help="Directory to save output files (default: current directory)")
+    parser.add_argument('--check-renames', type=pathlib.Path,
+                       help="Path to old course list CSV to check for needed directory renames")
     
     args = parser.parse_args()
     
     # Create base directory if it doesn't exist
     args.dir.mkdir(parents=True, exist_ok=True)
     
+    # Handle rename checking if requested
+    if args.check_renames:
+        check_course_renames(args.check_renames, args.dir)
+        return
+        
     if args.download:
-        if args.id:
-            args.course = get_course_name(args.id)
-        process_course(args.course, args.section, args.dir)
-        course_dir = args.dir / safe_dirname(args.course)
+        course_id = args.id if args.id is not None else args.course
+        course_dir = process_course(course_id, args.section, args.dir)
+        # course_name = get_course_name(args.id) if args.id else args.course
+        # course_dir = args.dir / safe_dirname(course_name)
         download_attachments(args.types, course_dir, args.section)
     elif not args.id and not args.course and not args.section:
         # if no argument is passed, fetch courses and save to csv
@@ -478,12 +559,10 @@ def main() -> None:
         if args.all:
             # fetch details for all courses
             for course in courses:
-                args.course = get_course_name(course['id'])
-                process_course(args.course, args.section, args.dir)
+                process_course(course['id'], args.section, args.dir)
     else:
-        if args.id:
-            args.course = get_course_name(args.id)
-        process_course(args.course, args.section, args.dir)
+        course_id = args.id if args.id is not None else args.course
+        process_course(course_id, args.section, args.dir)
 
 
 if __name__ == "__main__":
