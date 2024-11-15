@@ -19,10 +19,10 @@ INITIAL_DELAY = 30  # initial delay in seconds
 # os.chdir(script_dir)
 
 load_dotenv()
-API_KEY = os.getenv("TEACHABLE_API_KEY")
+TEACHABLE_API_KEY = os.getenv("TEACHABLE_API_KEY")
 HEADERS = {
     "accept": "application/json",
-    "apiKey": API_KEY
+    "apiKey": TEACHABLE_API_KEY
 }
 
 BASE_URL = "https://developers.teachable.com/v1"
@@ -220,11 +220,27 @@ def get_lecture_details(course_id: int, lecture_id: int) -> dict:
         lecture_id (int): The ID of the lecture
 
     Returns:
-        dict: Detailed lecture information including attachments
+        dict: Detailed lecture information including attachments and video details
     """
     url = f"{BASE_URL}/courses/{course_id}/lectures/{lecture_id}"
     response = handle_rate_limit(url, HEADERS)
-    return response.json()
+    lecture_data = response.json()
+    
+    # Fetch video details for video attachments
+    if 'lecture' in lecture_data and 'attachments' in lecture_data['lecture']:
+        for attachment in lecture_data['lecture']['attachments']:
+            if attachment['kind'] == 'video':
+                video_url = f"{BASE_URL}/courses/{course_id}/lectures/{lecture_id}/videos/{attachment['id']}"
+                video_response = handle_rate_limit(video_url, HEADERS)
+                video_data = video_response.json()
+                
+                # Add video details to the attachment
+                if 'video' in video_data:
+                    attachment['url_thumbnail'] = video_data['video'].get('url_thumbnail', '')
+                    attachment['media_duration'] = video_data['video'].get('media_duration', 0)
+                    print(f"Video length (s): {attachment['media_duration']}")
+    
+    return lecture_data
 
 def save_text_attachment_as_html(attachment_id: str, text_content: str, base_dir: pathlib.Path) -> None:
     """
@@ -340,7 +356,9 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                         "attachment_position": attachment["position"],
                         "attachment_name": attachment["name"],
                         "attachment_kind": attachment["kind"],
-                        "attachment_url": attachment["url"]
+                        "attachment_url": attachment["url"],
+                        "url_thumbnail": attachment.get("url_thumbnail", ""),
+                        "media_duration": attachment.get("media_duration", 0)
                     }
                     rows.append(row)
         else:
