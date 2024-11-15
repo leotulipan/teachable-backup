@@ -349,3 +349,100 @@ example: https://developers.teachable.com/v1/courses/2221627/lectures/49584165/v
   }
 }
 ```
+
+## Fetch an id list of quizzes in a specific course lecture
+
+https://developers.teachable.com/v1/courses/{course_id}/lectures/{lecture_id}/quizzes
+
+if empty, return an empty list:
+
+```json
+{
+  "quiz_ids": []
+}
+```
+
+## Return of quiz on lecture fetch
+
+the above already mentioned endpoint
+
+https://developers.teachable.com/v1/courses/{course_id}/lectures/{lecture_id}
+
+if we want just the quiz we can : Fetch a specific quiz information.
+https://developers.teachable.com/v1/courses/{course_id}/lectures/{lecture_id}/quizzes/{quiz_id}
+note: {quiz_id} = attachment_id
+
+```json
+{
+  "quiz": {
+    "id": 94495069,
+    "name": null,
+    "kind": "quiz",
+    "url": null,
+    "text": null,
+    "position": 5,
+    "quiz": {
+      "id": 2152473,
+      "type": "Quiz",
+      "questions": [
+        {
+          "question": "Was bezeichnet das Konzept von \"artgerecht\"?",
+          "question_type": "single",
+          "answers": [
+            " Eine Ernährung, die ausschließlich auf Pflanzen basiert.",
+            "Leben in Einklang mit unserer evolutionären Anpassung und der Ernährung, die uns geprägt hat.",
+            "Die Nutzung moderner Technologien zur Verbesserung der Gesundheit.",
+            " Eine Ernährung, die sich ausschließlich auf Fleisch konzentriert."
+          ],
+          "correct_answers": [
+            "Leben in Einklang mit unserer evolutionären Anpassung und der Ernährung, die uns geprägt hat."
+          ],
+          "graded": true
+        },
+        {
+          "question": "Welche Methoden werden verwendet, um zu bestimmen, was \"artgerecht\" ist?",
+          "question_type": "single",
+          "answers": [
+            "Archäologische Funde und Vergleich mit unseren nächsten lebenden Verwandten.",
+            "Astrologische Berechnungen und traditionelle Mythen.",
+            "Moderne Diät-Trends und populärwissenschaftliche Bücher.",
+            "Online-Umfragen und Fernsehdokumentationen."
+          ],
+          "correct_answers": [
+            "Archäologische Funde und Vergleich mit unseren nächsten lebenden Verwandten."
+          ],
+          "graded": true
+        },
+        {
+          "question": "Was ist die Hauptnahrung von Gorillas?",
+          "question_type": "single",
+          "answers": [
+            "Fleisch und Fisch.",
+            "Blätter, Früchte und Insekten.",
+            "Körner und Samen.",
+            " Künstliches Gorillafutter aus dem Zoo."
+          ],
+          "correct_answers": [
+            "Blätter, Früchte und Insekten."
+          ],
+          "graded": true
+        },
+        {
+          "question": "Welchen Anteil hat tierische Nahrung in der Ernährung von Schimpansen?",
+          "question_type": "single",
+          "answers": [
+            "50-60%.",
+            "0%",
+            "3-5%",
+            "25-30%"
+          ],
+          "correct_answers": [
+            "3-5%"
+          ],
+          "graded": true
+        }
+      ]
+    }
+  }
+}
+```
