@@ -301,7 +301,7 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
     rows = []
     for section in course_details["course"]["lecture_sections"]:
         if not section_name or section['name'] == section_name:
-            print(f"Processing section: {section['name']}")
+            print(f"Processing Module: {section['name']}")
             for lecture in section["lectures"]:
                 lecture_details = get_lecture_details(course_id, lecture["id"])
                 
@@ -436,9 +436,12 @@ def process_course(course_id: int | str, section_name: str | None, base_dir: pat
     course_dir = base_dir / course_dirname
     course_dir.mkdir(parents=True, exist_ok=True)
     
-    if (course_dir / 'course_data.csv').exists():
-        print(f"'course_data.csv' already exists in '{course_dir}'. Skipping...")
-        return
+    course_data_path = course_dir / 'course_data.csv'
+    if course_data_path.exists():
+        created_time = time.strftime('%Y-%m-%d', time.gmtime(os.path.getctime(course_data_path)))
+        new_course_data_path = course_dir / f"{created_time}_course_data.csv"
+        course_data_path.rename(new_course_data_path)
+        print(f"Renamed 'course_data.csv' to '{new_course_data_path.name}' in '{course_dir}'.")
     
     print(f"Fetching course details for: '{course_name}'")
     get_course_csv(course_id=course_id, section_name=section_name, base_dir=course_dir)
