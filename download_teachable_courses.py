@@ -239,7 +239,7 @@ def get_lecture_details(course_id: int, lecture_id: int) -> dict:
                 if 'video' in video_data:
                     attachment['url_thumbnail'] = video_data['video'].get('url_thumbnail', '')
                     attachment['media_duration'] = video_data['video'].get('media_duration', 0)
-                    print(f"Video length (s): {attachment['media_duration']}")
+                    print(f"  Video length: {attachment['media_duration']}")
     
     return lecture_data
 
@@ -339,7 +339,7 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                         "url": ""
                     }]
                 for attachment in lecture_details["lecture"]["attachments"]:
-                    if (attachment["kind"] == "text" or attachment["kind"] == "code_embed") and attachment["text"]:
+                    if (attachment["kind"] == "text" or attachment["kind"] == "code_embed" or attachment["kind"] == "code_display") and attachment["text"]:
                         filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}"
                         save_text_attachment_as_html(filename, f"{attachment['text']}", base_dir)
                     if attachment["kind"] == "quiz":
@@ -378,7 +378,7 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, section: str 
     Download course attachments based on specified types and section.
 
     Args:
-        types (list[str]): List of attachment types to download ('pdf', 'file', 'image', 'video')
+        types (list[str]): List of attachment types to download ('pdf', 'file', 'image', 'video', 'audio')
         base_dir (pathlib.Path): Base directory to save downloaded files
         section (str, optional): Section name to filter downloads by
     """
@@ -392,7 +392,9 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, section: str 
         'pdf': 'pdf_embed',
         'file': 'file',
         'image': 'image',
-        'video': 'video'
+        'video': 'video',
+        'audio': 'audio',
+        'image': 'image'
     }
     
     # Filter out types based on user input
