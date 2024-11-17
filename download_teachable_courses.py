@@ -1,5 +1,6 @@
 # https://chat.openai.com/c/3ed42491-1ef9-4aea-ad37-32ff55da547d
 # api playground https://docs.teachable.com/reference/showlecture
+import json
 import requests
 import csv
 from dotenv import load_dotenv
@@ -341,6 +342,12 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                     if (attachment["kind"] == "text" or attachment["kind"] == "code_embed") and attachment["text"]:
                         filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}"
                         save_text_attachment_as_html(filename, f"{attachment['text']}", base_dir)
+                    if attachment["kind"] == "quiz":
+                        quiz_content = attachment.get("quiz", {})
+                        quiz_filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}.json"
+                        with open(base_dir / quiz_filename, "w") as quiz_file:
+                            json.dump(quiz_content, quiz_file)
+                        #print(f"Quiz content saved to {quiz_filename}")
 
                     row = {
                         "course_id": course_id,
