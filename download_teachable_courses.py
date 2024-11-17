@@ -345,20 +345,20 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                     row = {
                         "course_id": course_id,
                         "course_name": course_details["course"]["name"],
-                        "module_id": section["id"],
                         "module_position": section["position"],
-                        "module_name": section["name"],
-                        "lecture_id": lecture_details["lecture"]["id"],
                         "lecture_position": lecture_details["lecture"]["position"],
+                        "attachment_position": attachment["position"],
+                        "module_name": section["name"],
                         "lecture_name": lecture_details["lecture"]["name"],
                         "lecture_is_published": lecture_details["lecture"]["is_published"],
-                        "attachment_id": attachment["id"],
-                        "attachment_position": attachment["position"],
                         "attachment_name": attachment["name"],
                         "attachment_kind": attachment["kind"],
                         "attachment_url": attachment["url"],
                         "url_thumbnail": attachment.get("url_thumbnail", ""),
-                        "media_duration": attachment.get("media_duration", 0)
+                        "media_duration": attachment.get("media_duration", 0),
+                        "module_id": section["id"],
+                        "lecture_id": lecture_details["lecture"]["id"],
+                        "attachment_id": attachment["id"],
                     }
                     rows.append(row)
         else:
