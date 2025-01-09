@@ -586,7 +586,7 @@ def main() -> None:
                        help="Directory to save output files (default: current directory)")
     parser.add_argument('--check-renames', type=pathlib.Path,
                        help="Path to old course list CSV to check for needed directory renames")
-    parser.add_argument('--overwrite', '-w', action='store_true',
+    parser.add_argument('--overwrite_course_csv', '-w', action='store_true',
                        help="Overwrite existing course_data.csv instead of renaming it")
     
     args = parser.parse_args()
@@ -611,7 +611,7 @@ def main() -> None:
 
     if args.download:
         course_id = args.id if args.id is not None else args.course
-        course_dir = process_course(course_id, module_filter, args.dir, args.overwrite)
+        course_dir = process_course(course_id, module_filter, args.dir, args.overwrite_course_csv)
         download_attachments(args.types, course_dir, lecture_filter)
     elif not args.id and not args.course and not args.module_name and not args.module_id:
         # if no argument is passed, fetch courses and save to csv
@@ -624,10 +624,10 @@ def main() -> None:
         if args.all:
             # fetch details for all courses
             for course in courses:
-                process_course(course['id'], module_filter, args.dir, args.overwrite)
+                process_course(course['id'], module_filter, args.dir, args.overwrite_course_csv)
     else:
         course_id = args.id if args.id is not None else args.course        
-        process_course(course_id, module_filter, args.dir, args.overwrite)
+        process_course(course_id, module_filter, args.dir, args.overwrite_course_csv)
 
 
 if __name__ == "__main__":
