@@ -373,14 +373,14 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
             
     save_to_csv(rows, base_dir)
 
-def download_attachments(types: list[str], base_dir: pathlib.Path, section: str | None = None) -> None:
+def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filter: str | int | None = None) -> None:
     """
-    Download course attachments based on specified types and section.
+    Download course attachments based on specified types and lecture filter.
 
     Args:
         types (list[str]): List of attachment types to download ('pdf', 'file', 'image', 'video', 'audio')
         base_dir (pathlib.Path): Base directory to save downloaded files
-        section (str, optional): Section name to filter downloads by
+        lecture_filter (str | int | None): Lecture name (str) or ID (int) to filter downloads by
     """
     # Check if "course_data.csv" exists
     csv_path = base_dir / "course_data.csv"
@@ -403,9 +403,12 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, section: str 
     with open(csv_path, 'r', encoding='utf-8') as file:
         reader = csv.DictReader(file, delimiter=';', quotechar='"')
         for row in reader:
-            # Check if section is set and matches
-            if section and row['section_name'] != section:
-                continue
+            # Check if lecture filter is set and matches
+            if lecture_filter:
+                if isinstance(lecture_filter, int) and int(row['lecture_id']) != lecture_filter:
+                    continue
+                elif isinstance(lecture_filter, str) and row['lecture_name'] != lecture_filter:
+                    continue
             
             # Check if attachment kind is in valid types
             if row['attachment_kind'] not in valid_types:
@@ -450,13 +453,13 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, section: str 
                         print(f"Failed to download {filename} after {MAX_RETRIES} attempts.")
                         sys.exit(1)
 
-def process_course(course_id: int | str, section_name: str | None, base_dir: pathlib.Path, overwrite: bool = False) -> None:
+def process_course(course_id: int | str, module_filter: int | str | None, base_dir: pathlib.Path, overwrite: bool = False) -> None:
     """
     Process a course by creating a directory and generating course data.
 
     Args:
         course_id (int | str): ID or name of the course to process
-        section_name (str, optional): Name of the section to filter by
+        module_filter (int | str | None): ID or name of the module to filter by
         base_dir (pathlib.Path): Base directory to save course files
         overwrite (bool): If True, overwrite existing course_data.csv instead of renaming it
     """
@@ -481,7 +484,7 @@ def process_course(course_id: int | str, section_name: str | None, base_dir: pat
         print(f"Renamed 'course_data.csv' to '{new_course_data_path.name}' in '{course_dir}'.")
     
     print(f"Fetching course details for: '{course_name}'")
-    get_course_csv(course_id=course_id, section_name=section_name, base_dir=course_dir)
+    get_course_csv(course_id=course_id, section_name=module_filter if isinstance(module_filter, str) else None, base_dir=course_dir)
 
     return course_dir
 
@@ -556,16 +559,28 @@ def main() -> None:
     - Fetch and save list of all courses
     - Process specific courses by name or ID
     - Download course attachments
-    - Filter operations by section
+    - Filter operations by module or lecture
     """
     parser = argparse.ArgumentParser(description="Fetch course details from Teachable API.")
     
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
-    group.add_argument('--id', "-i", type=int, default=None, help="Alternative: Course ID.")
-    parser.add_argument('--section', "-s", default=None, help="Name of the section.")
+    # Course selection group
+    course_group = parser.add_mutually_exclusive_group()
+    course_group.add_argument('--course', "-c", default=None, help="Name of the course. e.g. 'Fachausbildung zum Coach für Ketogene Ernährung'")
+    course_group.add_argument('--id', "-i", type=int, default=None, help="Alternative: Course ID.")
+    
+    # Module filter group
+    module_group = parser.add_mutually_exclusive_group()
+    module_group.add_argument('--module_id', "-m", type=int, default=None, help="ID of the module to process.")
+    module_group.add_argument('--module_name', "-n", default=None, help="Name of the module to process.")
+    
+    # Lecture filter group
+    lecture_group = parser.add_mutually_exclusive_group()
+    lecture_group.add_argument('--lecture_id', "-l", type=int, default=None, help="ID of the lecture to download attachments from.")
+    lecture_group.add_argument('--lecture_name', default=None, help="Name of the lecture to download attachments from.")
+    
     parser.add_argument('--download', "-d", action='store_true', help="Flag to download attachments.")
-    parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video'], nargs='*', default=['pdf', 'file', 'image', 'video'], help="Types of attachments to download.")
+    parser.add_argument('--types', "-t", choices=['pdf', 'file', 'image', 'video', 'audio'], nargs='*', 
+                       default=['pdf', 'file', 'image', 'video', 'audio'], help="Types of attachments to download.")
     parser.add_argument('--all', '-a', action='store_true', help="Flag to fetch details for all courses.")
     parser.add_argument('--dir', '-o', type=pathlib.Path, default=pathlib.Path(),
                        help="Directory to save output files (default: current directory)")
@@ -576,6 +591,9 @@ def main() -> None:
     
     args = parser.parse_args()
     
+    module_filter = args.module_id if args.module_id is not None else args.module_name
+    lecture_filter = args.lecture_id if args.lecture_id is not None else args.lecture_name
+
     # Create base directory if it doesn't exist
     args.dir.mkdir(parents=True, exist_ok=True)
     
@@ -584,13 +602,18 @@ def main() -> None:
         check_course_renames(args.check_renames, args.dir)
         return
         
+
+# 
+# 
+# FIX: No need to download csv when we are just fetching downloads
+# ADD: check file size before downloading and print it as debug info
+# 
+
     if args.download:
         course_id = args.id if args.id is not None else args.course
-        course_dir = process_course(course_id, args.section, args.dir, args.overwrite)
-        # course_name = get_course_name(args.id) if args.id else args.course
-        # course_dir = args.dir / safe_dirname(course_name)
-        download_attachments(args.types, course_dir, args.section)
-    elif not args.id and not args.course and not args.section:
+        course_dir = process_course(course_id, module_filter, args.dir, args.overwrite)
+        download_attachments(args.types, course_dir, lecture_filter)
+    elif not args.id and not args.course and not args.module_name and not args.module_id:
         # if no argument is passed, fetch courses and save to csv
         courses = fetch_courses()
         save_course_list_to_csv(courses, args.dir)
@@ -601,10 +624,10 @@ def main() -> None:
         if args.all:
             # fetch details for all courses
             for course in courses:
-                process_course(course['id'], args.section, args.dir, args.overwrite)
+                process_course(course['id'], module_filter, args.dir, args.overwrite)
     else:
-        course_id = args.id if args.id is not None else args.course
-        process_course(course_id, args.section, args.dir, args.overwrite)
+        course_id = args.id if args.id is not None else args.course        
+        process_course(course_id, module_filter, args.dir, args.overwrite)
 
 
 if __name__ == "__main__":
