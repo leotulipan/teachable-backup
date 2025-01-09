@@ -1,5 +1,9 @@
 # Teachable API documentation and examples
 
+API Reference with direct testing here
+
+<https://docs.teachable.com/reference/listcourses>
+
 ## Public URLS
 
 Course ID: 42072
