@@ -114,31 +114,31 @@ The script is designed to interact with the Teachable API to:
      - **Fetch Course Data and Save to CSV:**
 
        ```bash
-       python get_keto_coach_lectures.py
+       python download_teachable_courses.py
        ```
 
      - **Fetch Specific Course and Section:**
 
        ```bash
-       python get_keto_coach_lectures.py --course "Your Course Name" --section "Modul 3"
+       python download_teachable_courses.py --course "Your Course Name" --section "Modul 3"
        ```
 
      - **Download Attachments of Specific Types:**
 
        ```bash
-       python get_keto_coach_lectures.py --download --types image pdf
+       python download_teachable_courses.py --download --types image pdf
        ```
 
      - **Download Attachments from a Specific Section:**
 
        ```bash
-       python get_keto_coach_lectures.py --download --section "Modul 3"
+       python download_teachable_courses.py --download --section "Modul 3"
        ```
 
      - **Combine Type and Section Filters:**
 
        ```bash
-       python get_keto_coach_lectures.py --download --types image pdf --section "Modul 3"
+       python download_teachable_courses.py --download --types image pdf --section "Modul 3"
        ```
 
 8. **File Naming Convention:**
@@ -229,38 +229,42 @@ The script is designed to interact with the Teachable API to:
 
 #### **Usage Examples**
 
+```bash
+uv run .\download_teachable_courses.py --id 42303 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+```
+
 - **Fetch and Save All Course Data:**
 
   ```bash
-  python get_keto_coach_lectures.py
+  python download_teachable_courses.py
   ```
 
 - **Fetch and Save Data for a Specific Section:**
 
   ```bash
-  python get_keto_coach_lectures.py --course "Fachausbildung zum Coach für Ketogene Ernährung" --section "Modul 3"
+  python download_teachable_courses.py --course "Fachausbildung zum Coach für Ketogene Ernährung" --section "Modul 3"
   ```
 
 - **Download All Types of Attachments:**
 
   ```bash
-  python get_keto_coach_lectures.py --download
+  python download_teachable_courses.py --download
   ```
 
 - **Download Specific Types of Attachments (e.g., Images and PDFs):**
 
   ```bash
-  python get_keto_coach_lectures.py --download --types image pdf
+  python download_teachable_courses.py --download --types image pdf
   ```
 
 - **Download Attachments from a Specific Section:**
 
   ```bash
-  python get_keto_coach_lectures.py --download --section "Modul 3"
+  python download_teachable_courses.py --download --section "Modul 3"
   ```
 
 - **Combine Type and Section Filters:**
 
   ```bash
-  python get_keto_coach_lectures.py --download --types image pdf --section "Modul 3"
+  python download_teachable_courses.py --download --types image pdf --section "Modul 3"
   ```
