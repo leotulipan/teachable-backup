@@ -210,7 +210,17 @@ def get_course_details(course_id: int) -> dict:
     """
     url = f"{BASE_URL}/courses/{course_id}"
     response = handle_rate_limit(url, HEADERS)
-    return response.json()
+
+    # Sort lecture_sections by position
+    sorted_course_data = response.json()
+    
+    sorted_course_data['course']['lecture_sections'].sort(key=lambda x: x['position'])
+    
+    # Sort lectures within each section by position
+    for section in sorted_course_data['course']['lecture_sections']:
+        section['lectures'].sort(key=lambda x: x['position'])
+
+    return sorted_course_data
 
 def get_lecture_details(course_id: int, lecture_id: int) -> dict:
     """
@@ -414,15 +424,26 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
             if row['attachment_kind'] not in valid_types:
                 continue
             
-
             # Download and save the file
             retries = 0
             while retries < MAX_RETRIES:
                 try:
                     response = requests.get(row['attachment_url'], stream=True)
                     response.raise_for_status()  # Raise error on failed requests
+                    
+                    # print(f"Processing attachment row: {row}")
 
-                    filename = base_dir / f"{row['section_position'].zfill(2)}_{row['lecture_position'].zfill(2)}_{str(int(row['attachment_position'])).zfill(2)}_{row['attachment_id']}_{row['attachment_name']}"
+                    # filename = base_dir / f"{row['section_position'].zfill(2)}_{row['lecture_position'].zfill(2)}_{str(int(row['attachment_position'])).zfill(2)}_{row['attachment_id']}_{row['attachment_name']}"
+                    # Use .get(key, default) with a fallback value to handle missing keys
+                    section_pos = row.get('section_position', '')
+                    lecture_pos = row.get('lecture_position', '')
+                    attachment_pos = row.get('attachment_position', '')
+                    attachment_id = row.get('attachment_id', '')
+                    attachment_name = row.get('attachment_name', '')
+
+                    # You can choose a default that makes sense, e.g. "00" or something similar.
+                    filename = base_dir / f"{section_pos.zfill(2)}_{lecture_pos.zfill(2)}_{str(int(attachment_pos)).zfill(2)}_{attachment_id}_{attachment_name}"
+
 
                     # Check if file exists and has size greater than 0
                     if os.path.exists(filename) and os.path.getsize(filename) > 0:
@@ -480,6 +501,8 @@ def process_course(course_id: int | str, module_filter: int | str | None, base_d
     if course_data_path.exists() and not overwrite:
         created_time = time.strftime('%Y-%m-%d', time.gmtime(os.path.getctime(course_data_path)))
         new_course_data_path = course_dir / f"{created_time}_course_data.csv"
+        if new_course_data_path.exists():
+            new_course_data_path.unlink()
         course_data_path.rename(new_course_data_path)
         print(f"Renamed 'course_data.csv' to '{new_course_data_path.name}' in '{course_dir}'.")
     
