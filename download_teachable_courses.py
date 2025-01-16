@@ -13,7 +13,7 @@ import pathlib
 
 MAX_RETRIES = 5  # maximum number of retries
 DELAY_FACTOR = 3  # delay multiplier
-INITIAL_DELAY = 30  # initial delay in seconds
+INITIAL_DELAY = 20  # initial delay in seconds
 
 # Change the current working directory to the directory of the script
 # script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -249,7 +249,7 @@ def get_lecture_details(course_id: int, lecture_id: int) -> dict:
                 if 'video' in video_data:
                     attachment['url_thumbnail'] = video_data['video'].get('url_thumbnail', '')
                     attachment['media_duration'] = video_data['video'].get('media_duration', 0)
-                    print(f"  Video length: {attachment['media_duration']}")
+                    # print(f"  Video length: {attachment['media_duration']}")
     
     return lecture_data
 
@@ -322,14 +322,16 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
     if course_name:
         course_id = fetch_course_id(course_name)
     
-    print(f"Fetching details for course ID: {course_id}")
+    print(f"Fetching details and text attachments for course ID: {course_id}")
     course_details = get_course_details(course_id)
+    
 
     rows = []
     for section in sorted(course_details["course"]["lecture_sections"], key=lambda x: x["position"]):
         if not section_name or section['name'] == section_name:
-            print(f"Processing Module: '{section['name']}' with {len(section["lectures"])} lectures.")
+            print(f"Module {section['position']}: '{section['name']}' with {len(section["lectures"])} lectures.")
             for lecture in section["lectures"]:
+
                 lecture_details = get_lecture_details(course_id, lecture["id"])
                 
                 if 'lecture' not in lecture_details:
@@ -339,7 +341,7 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                     print(lecture_details)
                     continue
 
-                print(f" Lecture '{lecture_details["lecture"]["name"]}' found with {len(lecture_details['lecture']['attachments'])} attachments.")
+                print(f" ├─ Lecture {lecture_details["lecture"]["position"]}: '{lecture_details["lecture"]["name"]}' ({len(lecture_details['lecture']['attachments'])} attachments)")
                 if not lecture_details["lecture"]["attachments"]:
                     lecture_details['lecture']['attachments'] = [{
                         "id": "0",
@@ -354,10 +356,10 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                         save_text_attachment_as_html(filename, f"{attachment['text']}", base_dir)
                     if attachment["kind"] == "quiz":
                         quiz_content = attachment.get("quiz", {})
-                        quiz_filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}.json"
+                        quiz_filename = f"{str(section['position']).zfill(2)}_{str(lecture['position']).zfill(2)}_{str(attachment['position']).zfill(2)}_{attachment['id']}_{safe_filename(attachment['name'])}_quiz.json"
                         with open(base_dir / quiz_filename, "w") as quiz_file:
                             json.dump(quiz_content, quiz_file)
-                        #print(f"Quiz content saved to {quiz_filename}")
+                        print(f" │ └─ Quiz content saved to {quiz_filename}")
 
                     row = {
                         "course_id": course_id,
@@ -379,7 +381,7 @@ def get_course_csv(course_name: str | None = None, course_id: int | None = None,
                     }
                     rows.append(row)
         else:
-            print(f"Skipping section: {section['name']}")
+            print(f" Skipping section: {section['name']}")
             
     save_to_csv(rows, base_dir)
 
@@ -430,6 +432,14 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
                 try:
                     response = requests.get(row['attachment_url'], stream=True)
                     response.raise_for_status()  # Raise error on failed requests
+
+                    # Get the file size from the Content-Length header
+                    file_size = response.headers.get('Content-Length')
+                    if file_size is not None:
+                        file_size = int(file_size)
+                    else:
+                        # we dont know the file size
+                        file_size = 0
                     
                     # print(f"Processing attachment row: {row}")
 
@@ -439,7 +449,7 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
                     lecture_pos = row.get('lecture_position', '')
                     attachment_pos = row.get('attachment_position', '')
                     attachment_id = row.get('attachment_id', '')
-                    attachment_name = row.get('attachment_name', '')
+                    attachment_name = re.sub(r'[<>:"/\\|?*]', '_', row.get('attachment_name', '') )
 
                     # You can choose a default that makes sense, e.g. "00" or something similar.
                     filename = base_dir / f"{section_pos.zfill(2)}_{lecture_pos.zfill(2)}_{str(int(attachment_pos)).zfill(2)}_{attachment_id}_{attachment_name}"
@@ -447,22 +457,29 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
 
                     # Check if file exists and has size greater than 0
                     if os.path.exists(filename) and os.path.getsize(filename) > 0:
-                        print(f"File {filename} already exists and has content. Skipping download.")
+                        print(f"File exists. Skipping download {os.path.basename(filename)}.")
                         break  # exit the loop if file is already there and has content
                     
-                    print(f"Downloading: {filename}")
-                    with open(filename, 'wb') as out_file:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            out_file.write(chunk)
-                    
-                    print(f"Downloaded: {filename}")
-                    break  # exit the loop if download was successful
+                    print(f"Downloading: {os.path.basename(filename)} ({file_size/1024/1024:.2f} MB)")
+                    try:
+                        with open(filename, 'wb') as out_file:
+                            downloaded = 0
+                            chunk_size = 1048576  # 1MB
+                            for chunk in response.iter_content(chunk_size=chunk_size):
+                                out_file.write(chunk)
+                                downloaded += len(chunk)
+                                done = int(50 * downloaded / file_size)
+                                print(f"\r[{'=' * done}{' ' * (50-done)}] {downloaded / file_size * 100:.2f}%", end='')
+                        # print a newline after the progress bar
+                        print()
+                    except KeyboardInterrupt:
+                        # Handle keyboard interrupt (Ctrl+C)
+                        print(f"Interrupted! Deleting partial file: {os.path.basename(filename)}")
+                        os.remove(filename)
+                        raise
 
-                except KeyboardInterrupt:
-                    # Handle keyboard interrupt (Ctrl+C)
-                    print(f"Interrupted! Deleting partial file: {filename}")
-                    os.remove(filename)
-                    raise
+                    #print(f"Downloaded: {filename}")
+                    break  # exit the loop if download was successful
 
                 except (ConnectionResetError, requests.exceptions.ChunkedEncodingError) as e:
                     retries += 1
