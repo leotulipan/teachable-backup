@@ -4,16 +4,18 @@
 
 ## To-Dos
 
-[x] Video Length Retrieval: Extract and store the duration of each video.
-    -> media_duration field in csv
-[ ] Subtitle Availability Detection: Determine and record whether subtitles exist for each video.
-[ ] Transition Data Storage: Move from CSV to Google Sheets or Excel, ensuring custom columns are preserved.
-[ ] Custom Columns Addition: Manually add and maintain required columns in the spreadsheet.
+[ ] Quiz Download? Test/Does it work?
+[ ] CSV -> Save as Excel or DE Windows Format CSV (easy open in Excel)
 [ ] Prevent Double Downloading: Enhance existing checks to avoid redundant downloads.
     -> move/rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
-[ ] Append Data Without Overwriting: Ensure the script appends new data without altering custom columns.
-[ ] CSV -> Save as Excel or DE Windows Format CSV (easy open in Excel)
 [ ] File Naming and Indexing: Assign and manage index numbers for modules and lectures.
+[ ] Subtitle Availability Detection: Determine and record whether subtitles exist for each video.
+[ ] User Info
+    Page through users  <https://developers.teachable.com/v1/users?page=50&per=20>
+    Get each ID and save the json <https://developers.teachable.com/v1/users/user_id>
+    see saved example jsons
+[x] Video Length Retrieval: Extract and store the duration of each video.
+    -> media_duration field in csv
 
 ## Prerequisites
 
