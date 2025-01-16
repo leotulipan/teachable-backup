@@ -97,7 +97,12 @@ def get_course_name(course_id: int) -> str:
     """
     url = f"{BASE_URL}/courses/{course_id}"
     response = handle_rate_limit(url, HEADERS)
-    data = response.json()
+    try:
+        data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print(f"Error decoding JSON for course ID: {course_id}")
+        print(f"Response content: {response.text}")
+        return "Unknown Course Name"
     return data["course"]["name"]
 
 def handle_rate_limit(url: str, headers: dict) -> requests.Response:
@@ -235,7 +240,12 @@ def get_lecture_details(course_id: int, lecture_id: int) -> dict:
     """
     url = f"{BASE_URL}/courses/{course_id}/lectures/{lecture_id}"
     response = handle_rate_limit(url, HEADERS)
-    lecture_data = response.json()
+    try:
+        lecture_data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print(f"Error decoding JSON for lecture ID: {lecture_id} in course ID: {course_id}")
+        print(f"Response content: {response.text}")
+        return {}
     
     # Fetch video details for video attachments
     if 'lecture' in lecture_data and 'attachments' in lecture_data['lecture']:
@@ -243,7 +253,12 @@ def get_lecture_details(course_id: int, lecture_id: int) -> dict:
             if attachment['kind'] == 'video':
                 video_url = f"{BASE_URL}/courses/{course_id}/lectures/{lecture_id}/videos/{attachment['id']}"
                 video_response = handle_rate_limit(video_url, HEADERS)
-                video_data = video_response.json()
+                try:
+                    video_data = video_response.json()
+                except requests.exceptions.JSONDecodeError:
+                    print(f"Error decoding JSON for video attachment ID: {attachment['id']} in lecture ID: {lecture_id}")
+                    print(f"Response content: {video_response.text}")
+                    continue
                 
                 # Add video details to the attachment
                 if 'video' in video_data:
@@ -431,7 +446,14 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
             while retries < MAX_RETRIES:
                 try:
                     response = requests.get(row['attachment_url'], stream=True)
-                    response.raise_for_status()  # Raise error on failed requests
+                    try:
+                        response.raise_for_status()  # Raise error on failed requests
+                    except requests.exceptions.HTTPError as e:
+                        if response.status_code == 403:
+                            print(f"Error 403: Forbidden. Details for the current row: {row}")
+                            sys.exit(1)
+                        else:
+                            raise e
 
                     # Get the file size from the Content-Length header
                     file_size = response.headers.get('Content-Length')
@@ -457,7 +479,7 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
 
                     # Check if file exists and has size greater than 0
                     if os.path.exists(filename) and os.path.getsize(filename) > 0:
-                        print(f"File exists. Skipping download {os.path.basename(filename)}.")
+                        # print(f"File exists. Skipping download {os.path.basename(filename)}.")
                         break  # exit the loop if file is already there and has content
                     
                     print(f"Downloading: {os.path.basename(filename)} ({file_size/1024/1024:.2f} MB)")
@@ -468,7 +490,10 @@ def download_attachments(types: list[str], base_dir: pathlib.Path, lecture_filte
                             for chunk in response.iter_content(chunk_size=chunk_size):
                                 out_file.write(chunk)
                                 downloaded += len(chunk)
-                                done = int(50 * downloaded / file_size)
+                                if file_size > 0:
+                                    done = int(50 * downloaded / file_size)
+                                else:
+                                    done = 50  # Handle zero file size case
                                 print(f"\r[{'=' * done}{' ' * (50-done)}] {downloaded / file_size * 100:.2f}%", end='')
                         # print a newline after the progress bar
                         print()
