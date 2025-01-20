@@ -188,7 +188,7 @@ def process_lecture_data(
 
     for attachment in lecture["attachments"]:
         # Normalize attachment name
-        normalized_name = unicodedata.normalize("NFC", attachment["name"])
+        normalized_name = normalize_utf_filename(attachment["name"])
 
         processed_data.append(
             {
@@ -226,11 +226,18 @@ class TeachableAPIClient:
         self.max_retries = MAX_RETRIES
         self.delay_factor = DELAY_FACTOR
         self.initial_delay = INITIAL_DELAY
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
 
     def _handle_rate_limit(self, url: str) -> requests.Response:
         """Handles API rate limiting with retries."""
         retries = 0
         while retries < self.max_retries:
+            if self._stop_event.wait(timeout=0): # Check stop event immediately.
+                raise KeyboardInterrupt("API client stopped.")
+            
             response = requests.get(url, headers=self.headers)
             if response.status_code != 429:
                 return response
@@ -260,6 +267,7 @@ class TeachableAPIClient:
         raise requests.exceptions.RetryError(
             f"Max retries exceeded. Last response: {response.status_code} {response.reason}"
         )
+        
 
     def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Makes a GET request to the API."""
@@ -441,7 +449,10 @@ def course_processor(
     """
     Worker thread to process course tasks.
     """
-    while not stop_event.is_set():
+    while True:
+        if stop_event.is_set() or api_client._stop_event.is_set():
+            break
+
         try:
             course_id, module_id, lecture_id, output_dir = task_manager.get_course_task()
             # Use the base output directory for course processing
@@ -454,19 +465,20 @@ def course_processor(
             finally:
                 task_manager.course_task_done()
         except queue.Empty:
-            if task_manager.processing_done.is_set():
-                break  # No more courses to process
-            else:
-                sleep_with_interrupt(1)  # Wait a bit before checking again
-                continue
+            if task_manager.is_course_queue_empty() and task_manager.processing_done.is_set():
+                break # Exit if queue is empty and processing is done
+            time.sleep(0.5)
         except Exception as e:
             logger.exception(f"Unexpected error in course_processor: {e}")
 
-def download_worker(task_manager: TaskManager, valid_types: List[str], course_dir: pathlib.Path) -> None:
+def download_worker(task_manager: TaskManager, valid_types: List[str], course_dir: pathlib.Path, thread_index: int) -> None:
     """
     Worker thread to download attachments.
     """
-    while not stop_event.is_set():
+    while True:
+        if stop_event.is_set():  # Check for interrupt
+            break
+
         try:
             task = task_manager.get_download_task()
             if task is None:
@@ -514,12 +526,11 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
                 except Exception as e:
                     logger.exception(f"Error downloading {filename}: {e}")
         except queue.Empty:
-            if task_manager.processing_done.is_set() and task_manager.is_download_queue_empty():
-              break
-            else:
-              sleep_with_interrupt(1)
+            if task_manager.is_download_queue_empty() and task_manager.processing_done.is_set():
+                break
+            time.sleep(0.5)
         except Exception as e:
-          logger.exception(f"Unexpected error in download_worker: {e}")
+          logger.exception(f"Unexpected error in download_worker {thread_index}: {e}")
         finally:
             task_manager.download_task_done()
 
@@ -690,114 +701,11 @@ def process_course(
 
 def normalize_utf_filename(attachment_name):
     if isinstance(attachment_name, str) and attachment_name not in (None, ""):
-        attachment_name = unicodedata.normalize("NFC", attachment_name)
+        try:
+            attachment_name = unicodedata.normalize("NFC", attachment_name)
+        except Exception as e:
+            logger.error(f"Error normalizing name: '{attachment_name}' {e}")
     return attachment_name
-
-def process_course_OLD(
-    api_client: TeachableAPIClient,
-    course_id: int,
-    module_id: Optional[int],
-    lecture_id: Optional[int],
-    output_dir: pathlib.Path,
-    task_manager: TaskManager,
-) -> None:
-    """Processes a single course, fetching its details and queuing downloads."""
-    try:
-        course_data = api_client.get_course(course_id)
-        course_name = course_data["name"]
-        logger.info(f"Processing course: {course_name} (ID: {course_id})")
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            logger.error(f"Course with ID '{course_id}' not found.")
-        else:
-            logger.exception(f"Error fetching course details: {e}")
-        return
-
-    # Create course directory
-    course_dirname = f"{course_id} - {safe_filename(course_name)}"
-    course_dir = output_dir / course_dirname
-    course_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check if course name has changed and rename directory if needed
-    all_courses = api_client.get_all_courses()
-    for c in all_courses:
-        if c["id"] == course_id:
-            if c["name"] != course_name:
-                rename_course_directory(output_dir, course_id, course_name, c["name"])
-                course_name = c["name"]
-                course_dirname = f"{course_id} - {safe_filename(course_name)}"
-                course_dir = output_dir / course_dirname
-            break
-
-    # Backup existing course_data.csv
-    course_data_path = course_dir / "course_data.csv"
-    backup_existing_file(course_data_path)
-
-    # Fetch and process course data
-    logger.info(f"Fetching details for course: {course_name} (ID: {course_id})")
-    try:
-        course_content = api_client.get_course_content(course_id)
-    except requests.exceptions.HTTPError as e:
-        logger.exception(
-            f"Error fetching course sections for course ID {course_id}: {e}"
-        )
-        return
-
-    processed_data = []
-
-    for lecture in course_content['lectures']:
-        for index, lecture in enumerate(course_content['lectures']):
-            lecture_position = index + 1
-            
-            # Check for module ID and lecture ID and skip if not a match
-            if module_id and module_id != 0:  # Assuming 0 is not a valid module_id
-                logger.warning(f"Skipping lecture due to module ID filter: {lecture['name']}")
-                continue
-            if lecture_id and lecture_id != lecture["id"]:
-                logger.warning(f"Skipping lecture due to lecture ID filter: {lecture['name']}")
-                continue
-
-            logger.info(f"  Processing lecture: {lecture['name']}")
-
-            # Queue downloads right after getting lecture details
-            for attachment in lecture["attachments"]:
-                # Normalize attachment name
-                attachment_name =  normalize_utf_filename( attachment["name"])
-
-                task_manager.add_download_task(
-                    {
-                        "module_position": 0,  # There are no modules/sections
-                        "lecture_position": lecture_position,
-                        "attachment_position": attachment["position"],
-                        "attachment_id": attachment["id"],
-                        "attachment_name": attachment_name,
-                        "attachment_kind": attachment["kind"],
-                        "attachment_url": attachment["url"],
-                    }
-                )
-
-            processed_lecture_data = process_lecture_data(
-                lecture, course_id, course_name, lecture_position
-            )
-            processed_data.extend(processed_lecture_data)
-
-            for attachment in processed_lecture_data:
-                if attachment["kind"] in ("text", "code_embed", "code_display"):
-                    filename = safe_filename(
-                        f"00_{lecture_position:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}"
-                    )
-                    file_path = course_dir / f"{filename}.html"
-                    save_text_attachment(attachment["text"], file_path)
-                elif attachment["kind"] == "quiz":
-                    filename = safe_filename(
-                        f"00_{lecture_position:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}_quiz"
-                    )
-                    file_path = course_dir / f"{filename}.json"
-                    save_json_attachment(attachment["quiz"], file_path)
-
-    # Save processed data to CSV
-    save_data_to_csv(processed_data, course_data_path)
-    logger.info(f"Course data saved to {course_data_path}")
 
 def main() -> None:
     """
@@ -886,19 +794,17 @@ def main() -> None:
         elif args.operation == "process":
             # Start course processing and download threads
             course_thread = threading.Thread(
+                name="CourseProcessor", 
                 target=course_processor, args=(task_manager, api_client, args.output)
             )
             course_thread.start()
 
             download_threads = []
-            for _ in range(MAX_CONCURRENT_DOWNLOADS):
+            for i in range(MAX_CONCURRENT_DOWNLOADS):
                 thread = threading.Thread(
+                    name=f"DownloadWorker-{i}",  # Name the threads
                     target=download_worker,
-                    args=(
-                        task_manager,
-                        args.types,
-                        args.output,
-                    ),
+                    args=(task_manager, args.types, args.output, i), # Pass index
                 )
                 download_threads.append(thread)
                 thread.start()
@@ -911,26 +817,23 @@ def main() -> None:
             task_manager.signal_processing_done()
 
             # Keep the main thread alive and responsive to Ctrl+C
-            while not task_manager.processing_done.is_set() or not task_manager.is_download_queue_empty():
-                sleep_with_interrupt(1)  # Check every second
+            while any(t.is_alive() for t in [course_thread] + download_threads):
+                time.sleep(0.5)
             
 
     except KeyboardInterrupt:
         logger.warning("Keyboard interrupt received; attempting graceful shutdown...")
-        # Optionally: set an event or signal to your threads that they should stop
         stop_event.set()
+        api_client.stop() # Tell api client to stop.
+        time.sleep(5)
+    except Exception as e:  # Catch other potential exceptions
+        logger.exception(f"An unexpected error occurred: {e}")
     finally:
-            # Wait for the course processing thread to complete
+        if course_thread:
             course_thread.join()
-            logger.info("Course processing thread finished.")
-
-            # Wait for all queued tasks to be processed
-            task_manager.wait_for_processing_completion()
-
-            # Wait for download threads to complete
-            for thread in download_threads:
-                thread.join()
-            logger.info("Download threads finished.")
+        for thread in download_threads:
+            thread.join()
+        logger.info("All threads finished.")
 
 if __name__ == "__main__":
     main()
