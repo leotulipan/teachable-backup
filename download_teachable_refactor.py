@@ -477,9 +477,16 @@ def course_processor(
             finally:
                 task_manager.course_task_done()
         except queue.Empty:
+            logger.debug("Course queue is empty.")
             if task_manager.is_course_queue_empty() and task_manager.processing_done.is_set():
-                break # Exit if queue is empty and processing is done
-            time.sleep(0.5)
+                # Signal that all courses have been added
+                task_manager.signal_processing_done()
+
+                # Queue sentinel values for download workers
+                for _ in range(MAX_CONCURRENT_DOWNLOADS):
+                    task_manager.add_download_task(None)
+                break
+            #time.sleep(0.5)
         except Exception as e:
             logger.exception(f"Unexpected error in course_processor: {e}")
 
@@ -492,7 +499,7 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
             break
 
         try:
-            task = task_manager.download_queue.get()
+            task = task_manager.get_download_task()  
             if task is None:
                 break
             
@@ -505,6 +512,7 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
 
             # Skip if attachment type is not valid
             if task["attachment_kind"] not in valid_types:
+                task_manager.download_task_done()
                 continue
 
             filename = f"{module_pos:02d}_{lecture_pos:02d}_{attachment_pos:02d}_{attachment_id}_{safe_filename(attachment_name)}"
@@ -518,6 +526,13 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
                 logger.info(
                     f"Skipping download: File with attachment ID {attachment_id} already exists: {existing_file.name}"
                 )
+                task_manager.download_task_done()
+                continue
+
+            attachment_url = task.get('attachment_url')
+            if not attachment_url: # <-- Check for missing URL
+                logger.warning(f"Skipping task: Missing attachment URL for attachment ID {attachment_id}")
+                task_manager.download_task_done() # Important: Mark task as done even if skipped
                 continue
 
             with tqdm(
@@ -538,6 +553,7 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
             # Mark the task as done only AFTER successful processing or error handling.
             task_manager.download_task_done()
         except queue.Empty:
+            logger.debug("Download queue is empty.")
             if task_manager.is_download_queue_empty() and task_manager.processing_done.is_set():
                 break
             time.sleep(0.5)
@@ -834,16 +850,11 @@ def main() -> None:
             for course_id in args.course_ids:
                 task_manager.add_course_task(course_id, args.module_id, args.lecture_id, args.output)
 
-            # Signal that all courses have been added
-            task_manager.signal_processing_done()
-
+            logger.debug("Wait for the course processor thread to finish.")
             # Wait for the course processor thread to finish
             course_thread.join()
 
-            # Queue sentinel values for download workers
-            for _ in range(MAX_CONCURRENT_DOWNLOADS):
-                task_manager.add_download_task(None)
-
+            logger.debug("Wait for download worker threads to finish.")
             # Wait for download worker threads to finish
             for thread in download_threads:
                 thread.join()
