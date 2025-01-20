@@ -493,10 +493,9 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
 
             # Skip if attachment type is not valid
             if task["attachment_kind"] not in valid_types:
-                task_manager.download_task_done()
+                task_manager.download_task_done()  # Call task_done if skipping due to invalid type
                 continue
 
-            #filename = f"{module_pos.zfill(2)}_{lecture_pos.zfill(2)}_{attachment_pos.zfill(2)}_{attachment_id}_{safe_filename(attachment_name)}"
             filename = f"{module_pos:02d}_{lecture_pos:02d}_{attachment_pos:02d}_{attachment_id}_{safe_filename(attachment_name)}"
             file_path = course_dir / filename
             
@@ -508,7 +507,7 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
                 logger.info(
                     f"Skipping download: File with attachment ID {attachment_id} already exists: {existing_file.name}"
                 )
-                task_manager.download_task_done()
+                task_manager.download_task_done() # Call task_done when skipping. Remove if previous section now handles this.
                 continue
 
             with tqdm(
