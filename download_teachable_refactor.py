@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import unicodedata
 from typing import Any, Dict, List, Optional
 
@@ -403,6 +404,8 @@ class TeachableAPIClient:
 # --- Task Management ---
 class TaskManager:
     def __init__(self):
+        self.course_queue_size = 0   # Track course queue size
+        self.download_queue_size = 0 # Track download queue size
         self.course_queue = queue.Queue()
         self.download_queue = queue.Queue()
         self.processing_done = threading.Event() # for singaling when the queue is done and waiting for downloads
@@ -410,9 +413,14 @@ class TaskManager:
 
     def add_course_task(self, course_id: int, module_id: Optional[int], lecture_id: Optional[int], output_dir: pathlib.Path) -> None:
         self.course_queue.put((course_id, module_id, lecture_id, output_dir))
+        self.course_queue_size +=1
+        logger.debug(f"Add task: Course: {course_id}. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
 
     def add_download_task(self, task: Dict[str, Any]) -> None:
+        logger.info(f"Task: download for attachment: {task['attachment_id']}")
         self.download_queue.put(task)
+        self.download_queue_size += 1
+        logger.debug(f"Add task: Download for attachment: {task['attachment_id']}. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
 
     def signal_processing_done(self) -> None:
       """Signal that all courses and their data have been processed and added to the queue"""
@@ -430,9 +438,13 @@ class TaskManager:
 
     def course_task_done(self) -> None:
         self.course_queue.task_done()
+        self.course_queue_size -= 1  # Decrement after task is done
+        logger.debug(f"Course task done. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
 
     def download_task_done(self) -> None:
         self.download_queue.task_done()
+        self.download_queue_size -= 1  # Decrement after task is done
+        logger.debug(f"Download task done. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
 
     def is_course_queue_empty(self) -> bool:
       with self.lock:
@@ -480,7 +492,7 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
             break
 
         try:
-            task = task_manager.get_download_task()
+            task = task_manager.download_queue.get()
             if task is None:
                 break
             
@@ -493,7 +505,6 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
 
             # Skip if attachment type is not valid
             if task["attachment_kind"] not in valid_types:
-                task_manager.download_task_done()  # Call task_done if skipping due to invalid type
                 continue
 
             filename = f"{module_pos:02d}_{lecture_pos:02d}_{attachment_pos:02d}_{attachment_id}_{safe_filename(attachment_name)}"
@@ -507,7 +518,6 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
                 logger.info(
                     f"Skipping download: File with attachment ID {attachment_id} already exists: {existing_file.name}"
                 )
-                task_manager.download_task_done() # Call task_done when skipping. Remove if previous section now handles this.
                 continue
 
             with tqdm(
@@ -524,14 +534,18 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
                         logger.error(f"Failed to download: {filename}")
                 except Exception as e:
                     logger.exception(f"Error downloading {filename}: {e}")
+
+            # Mark the task as done only AFTER successful processing or error handling.
+            task_manager.download_task_done()
         except queue.Empty:
             if task_manager.is_download_queue_empty() and task_manager.processing_done.is_set():
                 break
             time.sleep(0.5)
         except Exception as e:
-          logger.exception(f"Unexpected error in download_worker {thread_index}: {e}")
-        finally:
-            task_manager.download_task_done()
+            logger.exception(f"Unexpected error in download_worker {thread_index}: {e}")
+            traceback.print_exc()
+
+    logger.info(f"Download worker {thread_index} finished.")
 
 # --- Main Functions ---
 def rename_if_needed(directory: pathlib.Path, new_filename: str, attachment_id: str) -> None:
@@ -823,9 +837,16 @@ def main() -> None:
             # Signal that all courses have been added
             task_manager.signal_processing_done()
 
-            # Keep the main thread alive and responsive to Ctrl+C
-            while any(t.is_alive() for t in [course_thread] + download_threads):
-                time.sleep(0.5)
+            # Wait for the course processor thread to finish
+            course_thread.join()
+
+            # Queue sentinel values for download workers
+            for _ in range(MAX_CONCURRENT_DOWNLOADS):
+                task_manager.add_download_task(None)
+
+            # Wait for download worker threads to finish
+            for thread in download_threads:
+                thread.join()
             
 
     except KeyboardInterrupt:
