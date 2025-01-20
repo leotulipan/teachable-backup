@@ -441,28 +441,32 @@ def course_processor(
     """
     Worker thread to process course tasks.
     """
-    while True:  # Use True instead of condition that only checks at the beginning of the loop
-        if stop_event.is_set():
-            break
+    while not stop_event.is_set():
         try:
             course_id, module_id, lecture_id, output_dir = task_manager.get_course_task()
-            # ... (rest of the course_processor function) ...
+            # Use the base output directory for course processing
+            course_output_dir = base_output_dir
+            logger.info(f"Processing course: {course_id}")
+            try:
+                process_course(api_client, course_id, module_id, lecture_id, course_output_dir, task_manager)
+            except Exception as e:
+                logger.exception(f"Error processing course {course_id}: {e}")
+            finally:
+                task_manager.course_task_done()
         except queue.Empty:
-            if task_manager.is_course_queue_empty() and task_manager.processing_done.is_set():
-                break
+            if task_manager.processing_done.is_set():
+                break  # No more courses to process
             else:
-              if not sleep_with_interrupt(1): # Check every second for interrupt
-                break # Exit if interrupted
+                sleep_with_interrupt(1)  # Wait a bit before checking again
+                continue
         except Exception as e:
             logger.exception(f"Unexpected error in course_processor: {e}")
 
-def download_worker(task_manager: TaskManager, valid_types: List[str], course_dir: pathlib.Path, thread_index) -> None:
+def download_worker(task_manager: TaskManager, valid_types: List[str], course_dir: pathlib.Path) -> None:
     """
     Worker thread to download attachments.
     """
-    while True:  # Changed to an infinite loop
-        if stop_event.is_set():
-            break
+    while not stop_event.is_set():
         try:
             task = task_manager.get_download_task()
             if task is None:
@@ -510,13 +514,12 @@ def download_worker(task_manager: TaskManager, valid_types: List[str], course_di
                 except Exception as e:
                     logger.exception(f"Error downloading {filename}: {e}")
         except queue.Empty:
-            if task_manager.is_download_queue_empty() and task_manager.processing_done.is_set():
+            if task_manager.processing_done.is_set() and task_manager.is_download_queue_empty():
               break
             else:
-              if not sleep_with_interrupt(1): # Check every second for interrupt
-                break # Exit if interrupted
+              sleep_with_interrupt(1)
         except Exception as e:
-            logger.exception(f"Unexpected error in download_worker {thread_index}: {e}")
+          logger.exception(f"Unexpected error in download_worker: {e}")
         finally:
             task_manager.download_task_done()
 
@@ -646,18 +649,15 @@ def process_course(
 
             # Queue downloads right after getting lecture details
             for attachment in lecture["attachments"]:
-                # Normalize attachment name, handle None case
-                attachment_name = attachment.get("name")  # Get name, defaults to None if missing
-                if isinstance(attachment_name, str) and attachment_name not in (None, ""):
-                    attachment_name = unicodedata.normalize("NFC", attachment_name)
-
+                # Normalize attachment name
+                normalized_name = unicodedata.normalize("NFC", attachment["name"])
                 task_manager.add_download_task(
                     {
                         "module_position": section_position,  # Use section_position
                         "lecture_position": lecture["position"],  # Use lecture's position
                         "attachment_position": attachment["position"],
                         "attachment_id": attachment["id"],
-                        "attachment_name": attachment_name,
+                        "attachment_name": normalized_name,
                         "attachment_kind": attachment["kind"],
                         "attachment_url": attachment["url"],
                     }
@@ -671,13 +671,13 @@ def process_course(
         for attachment in processed_lecture_data:
             if attachment["kind"] in ("text", "code_embed", "code_display"):
                 filename = safe_filename(
-                    f"{section['position']:02}_{lecture["position"]:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}"
+                    f"{section['position']:02}_{lecture_position:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}"
                 )
                 file_path = course_dir / f"{filename}.html"
                 save_text_attachment(attachment["text"], file_path)
             elif attachment["kind"] == "quiz":
                 filename = safe_filename(
-                    f"{section['position']:02}_{lecture["position"]:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}_quiz"
+                    f"{section['position']:02}_{lecture_position:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}_quiz"
                 )
                 file_path = course_dir / f"{filename}.json"
                 save_json_attachment(attachment["quiz"], file_path)
@@ -876,7 +876,6 @@ def main() -> None:
             logger.info(f"All courses saved to {file_path}")
 
         elif args.operation == "process":
-            logger.info("Processing courses...")
             # Start course processing and download threads
             course_thread = threading.Thread(
                 target=course_processor, args=(task_manager, api_client, args.output)
@@ -884,17 +883,15 @@ def main() -> None:
             course_thread.start()
 
             download_threads = []
-            for i in range(MAX_CONCURRENT_DOWNLOADS):
+            for _ in range(MAX_CONCURRENT_DOWNLOADS):
                 thread = threading.Thread(
                     target=download_worker,
                     args=(
                         task_manager,
                         args.types,
                         args.output,
-                        i # thread index
                     ),
                 )
-                thread.name = f"download_worker_{i}"  # Name for better logging
                 download_threads.append(thread)
                 thread.start()
 
@@ -906,33 +903,26 @@ def main() -> None:
             task_manager.signal_processing_done()
 
             # Keep the main thread alive and responsive to Ctrl+C
-            # while not task_manager.processing_done.is_set() or not task_manager.is_download_queue_empty():
-            #     sleep_with_interrupt(1)  # Check every second
-            while any(t.is_alive() for t in [course_thread] + download_threads):
-                if stop_event.is_set(): # Check event here too
-                  break
-                time.sleep(0.5) 
+            while not task_manager.processing_done.is_set() or not task_manager.is_download_queue_empty():
+                sleep_with_interrupt(1)  # Check every second
+            
 
     except KeyboardInterrupt:
         logger.warning("Keyboard interrupt received; attempting graceful shutdown...")
         # Optionally: set an event or signal to your threads that they should stop
         stop_event.set()
-        # Give threads a chance to complete current operations
-        time.sleep(5)
-        sys.exit(2)
-    except Exception as e:
-        logger.exception(f"An unexpected error occurred: {e}") # Handle other exceptions
-        sys.exit(1)
     finally:
-        # Explicitly join threads to ensure cleanup (even on KeyboardInterrupt)
-        if course_thread: # Check if course_thread was even started
-          course_thread.join()
-        for thread in download_threads:
-            thread.join()
-        logger.info("All threads finished.")
+            # Wait for the course processing thread to complete
+            course_thread.join()
+            logger.info("Course processing thread finished.")
 
-            # # Wait for all queued tasks to be processed
-            # task_manager.wait_for_processing_completion()
+            # Wait for all queued tasks to be processed
+            task_manager.wait_for_processing_completion()
+
+            # Wait for download threads to complete
+            for thread in download_threads:
+                thread.join()
+            logger.info("Download threads finished.")
 
 if __name__ == "__main__":
     main()
