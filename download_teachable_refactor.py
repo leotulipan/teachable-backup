@@ -649,15 +649,17 @@ def process_course(
 
             # Queue downloads right after getting lecture details
             for attachment in lecture["attachments"]:
-                # Normalize attachment name
-                normalized_name = unicodedata.normalize("NFC", attachment["name"])
+
+                # Normalize attachment name, handle None case
+                attachment_name = normalize_utf_filename(attachment.get("name"))
+
                 task_manager.add_download_task(
                     {
                         "module_position": section_position,  # Use section_position
                         "lecture_position": lecture["position"],  # Use lecture's position
                         "attachment_position": attachment["position"],
                         "attachment_id": attachment["id"],
-                        "attachment_name": normalized_name,
+                        "attachment_name": attachment_name,
                         "attachment_kind": attachment["kind"],
                         "attachment_url": attachment["url"],
                     }
@@ -685,6 +687,11 @@ def process_course(
     # Save processed data to CSV
     save_data_to_csv(processed_data, course_data_path)
     logger.info(f"Course data saved to {course_data_path}")
+
+def normalize_utf_filename(attachment_name):
+    if isinstance(attachment_name, str) and attachment_name not in (None, ""):
+        attachment_name = unicodedata.normalize("NFC", attachment_name)
+    return attachment_name
 
 def process_course_OLD(
     api_client: TeachableAPIClient,
@@ -755,14 +762,15 @@ def process_course_OLD(
             # Queue downloads right after getting lecture details
             for attachment in lecture["attachments"]:
                 # Normalize attachment name
-                normalized_name = unicodedata.normalize("NFC", attachment["name"])
+                attachment_name =  normalize_utf_filename( attachment["name"])
+
                 task_manager.add_download_task(
                     {
                         "module_position": 0,  # There are no modules/sections
                         "lecture_position": lecture_position,
                         "attachment_position": attachment["position"],
                         "attachment_id": attachment["id"],
-                        "attachment_name": normalized_name,
+                        "attachment_name": attachment_name,
                         "attachment_kind": attachment["kind"],
                         "attachment_url": attachment["url"],
                     }
