@@ -661,6 +661,12 @@ def process_course(
             # Queue downloads right after getting lecture details
             for attachment in lecture["attachments"]:
 
+                # Handle missing 'kind' key
+                attachment_kind = attachment.get("kind") 
+                if attachment_kind is None:
+                    logger.warning(f"Attachment {attachment.get('name', 'Unnamed')} missing 'kind' key, skipping.")
+                    continue  # Skip this attachment
+
                 # Normalize attachment name, handle None case
                 attachment_name = normalize_utf_filename(attachment.get("name"))
 
@@ -682,15 +688,17 @@ def process_course(
             processed_data.extend(processed_lecture_data)
 
         for attachment in processed_lecture_data:
-            if attachment["kind"] in ("text", "code_embed", "code_display"):
+            attachment_kind = attachment.get("kind") # Get kind safely
+
+            if attachment_kind in ("text", "code_embed", "code_display"):
                 filename = safe_filename(
-                    f"{section['position']:02}_{lecture_position:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}"
+                    f"{section['position']:02}_{lecture["position"]:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}"
                 )
                 file_path = course_dir / f"{filename}.html"
                 save_text_attachment(attachment["text"], file_path)
-            elif attachment["kind"] == "quiz":
+            elif attachment_kind == "quiz":
                 filename = safe_filename(
-                    f"{section['position']:02}_{lecture_position:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}_quiz"
+                    f"{section['position']:02}_{lecture["position"]:02}_{attachment['position']:02}_{attachment['id']}_{attachment['name']}_quiz"
                 )
                 file_path = course_dir / f"{filename}.json"
                 save_json_attachment(attachment["quiz"], file_path)
