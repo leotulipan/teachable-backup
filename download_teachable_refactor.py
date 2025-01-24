@@ -11,9 +11,14 @@ import unicodedata
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+
 from dotenv import load_dotenv
 from loguru import logger
 from tqdm import tqdm
+import signal
+import argparse
 
 # Constants
 MAX_RETRIES = 5
@@ -34,18 +39,10 @@ logger.add(
 logger.add("download_teachable_{time:YYYY-MM-DD}.log", rotation="500 MB")
 
 # --- Helper Functions ---
-def sleep_with_interrupt(duration: float) -> bool:
-  """Sleeps for the given duration (in seconds), returning early if stop_event is set.
-
-  Args:
-      duration: The sleep duration in seconds.
-
-  Returns:
-      True if the function slept for the full duration, False if it was interrupted.
-  """
-  if stop_event.wait(timeout=duration):
-      return False  # Interrupted
-  return True  # Slept for the full duration
+def signal_handler(sig, frame):
+    logger.warning('You pressed Ctrl+C!')
+    stop_event.set()
+    raise KeyboardInterrupt  # This will now interrupt system calls like time.sleep()
 
 def safe_filename(filename: str, max_length: int = 255) -> str:
     """
@@ -228,6 +225,10 @@ class TeachableAPIClient:
         self.delay_factor = DELAY_FACTOR
         self.initial_delay = INITIAL_DELAY
         self._stop_event = threading.Event()
+        self.session = requests.Session()  # Create a requests session
+        retries = Retry(total=5, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504]) # Configure retries
+        self.session.mount('https://', HTTPAdapter(max_retries=retries)) # Use with the session
+
 
     def stop(self):
         self._stop_event.set()
@@ -238,10 +239,14 @@ class TeachableAPIClient:
         while retries < self.max_retries:
             if self._stop_event.wait(timeout=0): # Check stop event immediately.
                 raise KeyboardInterrupt("API client stopped.")
-            
-            response = requests.get(url, headers=self.headers)
-            if response.status_code != 429:
-                return response
+
+            try:
+                response = self.session.get(url, headers=self.headers, timeout=30) #<- Use session here with headers and timeout
+                logger.debug(f"_handle_rate_limit - Requesting URL: {url}, Status code: {response.status_code}")
+                if response.status_code != 429:
+                    return response
+            except requests.exceptions.RequestException as e:
+                logger.error(f"_handle_rate_limit - Request failed: {e}") # Log error details
 
             retries += 1
             try:
@@ -334,12 +339,6 @@ class TeachableAPIClient:
                 return course
         return None
 
-    def _NONEXISTANT_get_section_lectures(
-        self, course_id: int, section_id: int
-    ) -> List[Dict[str, Any]]:
-        """Fetches lectures for a section."""
-        return self.get(f"/courses/{course_id}/sections/{section_id}/lectures")
-
     def get_course_content(self, course_id: int) -> Dict[str, Any]:
         """
         Fetch detailed information about a specific course, including all lectures and attachments.
@@ -403,65 +402,84 @@ class TeachableAPIClient:
 
 # --- Task Management ---
 class TaskManager:
-    def __init__(self):
-        self.course_queue_size = 0   # Track course queue size
-        self.download_queue_size = 0 # Track download queue size
-        self.course_queue = queue.Queue()
-        self.download_queue = queue.Queue()
-        self.processing_done = threading.Event() # for singaling when the queue is done and waiting for downloads
+    def __init__(self, maxsize=0):
         self.lock = threading.Lock()
+        self.course_queue_size = 0
+        self.download_queue_size = 0
+        self.course_queue = queue.Queue(maxsize=maxsize)  # Use maxsize here
+        self.download_queue = queue.Queue(maxsize=maxsize) # And here
+        self.stop_event = threading.Event()
+
+    def all_tasks_done(self) -> bool:
+        """Checks if all tasks are completed."""
+        if self.stop_event.is_set():
+            logger.debug("all_tasks_done() status - stop_event is set")
+            return True
+
+        with self.lock:
+            course_queue_empty = self.course_queue.empty()
+            download_queue_empty = self.download_queue.empty()
+            combined_empty = course_queue_empty and download_queue_empty  # Combine *after* checks
+
+            logger.debug(f"all_tasks_done() status - course_queue: {course_queue_empty}, download_queue: {download_queue_empty}, combined: {combined_empty}")  # Log details
+            return combined_empty
 
     def add_course_task(self, course_id: int, module_id: Optional[int], lecture_id: Optional[int], output_dir: pathlib.Path) -> None:
-        self.course_queue.put((course_id, module_id, lecture_id, output_dir))
-        self.course_queue_size +=1
-        logger.debug(f"Add task: Course: {course_id}. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
-
-    def add_download_task(self, task: Dict[str, Any]) -> None:
-        logger.info(f"Task: download for attachment: {task['attachment_id']}")
-        self.download_queue.put(task)
-        self.download_queue_size += 1
-        logger.debug(f"Add task: Download for attachment: {task['attachment_id']}. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
-
-    def signal_processing_done(self) -> None:
-      """Signal that all courses and their data have been processed and added to the queue"""
-      self.processing_done.set()
-
-    def wait_for_processing_completion(self) -> None:
-      """Wait for the processing_done event to be set, indicating all courses are processed"""
-      self.processing_done.wait()
+        with self.lock:
+            logger.debug(f"Add task: Course: {course_id}. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
+            self.course_queue.put((course_id, module_id, lecture_id, output_dir))
+            self.course_queue_size += 1
 
     def get_course_task(self) -> tuple[int, Optional[int], Optional[int], pathlib.Path]:
-        return self.course_queue.get()
+        with self.lock:
+            task = self.course_queue.get()
+            self.course_queue_size -=1 #<- Decrement before returning the task from the queue
+            return task
 
-    def get_download_task(self) -> Dict[str, Any]:
-        return self.download_queue.get()
 
     def course_task_done(self) -> None:
-        self.course_queue.task_done()
-        self.course_queue_size -= 1  # Decrement after task is done
-        logger.debug(f"Course task done. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
+        with self.lock:  # Correct placement
+            logger.debug(f"Course task done. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
+            self.course_queue.task_done()
+
+    def add_download_task(self, task: Optional[Dict[str, Any]]) -> None:  # Allow None for sentinel
+        with self.lock:
+            if task: # Log only actual download tasks, not None sentinels
+               logger.debug(f"Add task: Download for attachment: {task.get('attachment_id', 'None')}. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
+            self.download_queue.put(task)
+            self.download_queue_size += 1
+    
+    def get_download_task(self) -> Optional[Dict[str, Any]]:  # Allow returning None
+        with self.lock:
+            task = self.download_queue.get()
+            self.download_queue_size -= 1
+            return task
 
     def download_task_done(self) -> None:
-        self.download_queue.task_done()
-        self.download_queue_size -= 1  # Decrement after task is done
-        logger.debug(f"Download task done. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
+        with self.lock: # Correct Placement
+            logger.debug(f"Download task done. Course queue size: {self.course_queue_size}, Download queue size: {self.download_queue_size}")
+            self.download_queue.task_done()
 
     def is_course_queue_empty(self) -> bool:
-      with self.lock:
-        return self.course_queue.empty()
+        with self.lock:
+            return self.course_queue.empty()
 
     def is_download_queue_empty(self) -> bool:
         with self.lock:
             return self.download_queue.empty()
 
+
 # --- Worker Threads ---
-def course_processor(
+def course_worker(
     task_manager: TaskManager, api_client: TeachableAPIClient, base_output_dir: pathlib.Path
 ) -> None:
     """
     Worker thread to process course tasks.
     """
     while True:
+        time.sleep(1)
+        logger.debug(f"/cw/")
+
         if stop_event.is_set() or api_client._stop_event.is_set():
             break
 
@@ -476,90 +494,154 @@ def course_processor(
                 logger.exception(f"Error processing course {course_id}: {e}")
             finally:
                 task_manager.course_task_done()
+
+            # if task_manager.all_tasks_done():  # Check both queues
+            #     break  # Exit if all processing and downloads are done   
+
         except queue.Empty:
             logger.debug("Course queue is empty.")
-            if task_manager.is_course_queue_empty() and task_manager.processing_done.is_set():
-                # Signal that all courses have been added
-                task_manager.signal_processing_done()
+            # if task_manager.is_course_queue_empty() and task_manager.processing_done.is_set():
+            #     # Signal that all courses have been added
+            #     task_manager.signal_processing_done()
 
-                # Queue sentinel values for download workers
-                for _ in range(MAX_CONCURRENT_DOWNLOADS):
-                    task_manager.add_download_task(None)
-                break
-            #time.sleep(0.5)
+            #     # Queue sentinel values for download workers
+            #     for _ in range(MAX_CONCURRENT_DOWNLOADS):
+            #         task_manager.add_download_task(None)
+            #     break
+            # #time.sleep(0.5)
+            if task_manager.is_course_queue_empty():
+                break  # Exit if course queue is truly empty
+            time.sleep(1) # Check periodically
+            continue
         except Exception as e:
             logger.exception(f"Unexpected error in course_processor: {e}")
+            traceback.print_exc()
 
-def download_worker(task_manager: TaskManager, valid_types: List[str], course_dir: pathlib.Path, thread_index: int) -> None:
+    # After processing all courses, add sentinels for download workers
+    for _ in range(MAX_CONCURRENT_DOWNLOADS):  # Add sentinels here
+        task_manager.add_download_task(None)
+
+# --- minimal version for debugging ---
+def download_worker(task_manager, valid_types, course_dir, thread_index):
+    while True:
+        time.sleep(0.1)  # Adjust sleep as needed for testing; remove later
+        logger.debug(f"/dw/{thread_index}")
+
+        if stop_event.is_set():
+            logger.warning(f"Download worker {thread_index}: stop_event is set. Exiting.")
+            raise KeyboardInterrupt
+
+        if task_manager.all_tasks_done(): # check *before* getting tasks
+            break
+
+        try:
+            task = task_manager.get_download_task()
+            logger.debug(f"   \\ Task {task.get('attachment_id', 'empty')}")
+        except queue.Empty:
+            time.sleep(0.1)  # (Or remove entirely)
+            continue
+        except Exception as e:
+            logger.exception(f"download_worker - Unexpected error: {e}")
+            traceback.print_exc()
+            continue # Retry
+
+
+        if task is None:
+            task_manager.download_task_done()
+            logger.debug(f"   \\ None")
+            break
+
+        # ... (rest of your download logic)
+
+        task_manager.download_task_done()  # Add this line to mark tasks as done AFTER download logic
+
+    logger.info(f"Download worker {thread_index} finished.")
+
+
+        
+def full_download_worker(task_manager: TaskManager, valid_types: List[str], course_dir: pathlib.Path, thread_index: int) -> None:
     """
     Worker thread to download attachments.
     """
     while True:
+        time.sleep(1)
+        logger.debug(f"/dw/{thread_index}")
+
         if stop_event.is_set():  # Check for interrupt
-            break
+            logger.warning(f"Download worker {thread_index}: stop_event is set. Exiting.")
+            raise KeyboardInterrupt  # <--- Force interrupt after setting stop_event
 
         try:
-            task = task_manager.get_download_task()  
-            if task is None:
+            task = task_manager.get_download_task()
+            logger.debug(f"   \\ Task {task.get('attachment_id', 'empty')}")
+        except queue.Empty: # This needs to be outside to catch an empty queue before processing starts
+            if task_manager.all_tasks_done():
                 break
-            
-            module_pos = task.get('module_position', '')
-            lecture_pos = task.get('lecture_position', '')
-            attachment_pos = task.get('attachment_position', '')
-            attachment_id = task.get('attachment_id', '')
-            attachment_name = task.get('attachment_name', '')
-            attachment_url = task.get('attachment_url')
-
-            # Skip if attachment type is not valid
-            if task["attachment_kind"] not in valid_types:
-                task_manager.download_task_done()
-                continue
-
-            filename = f"{module_pos:02d}_{lecture_pos:02d}_{attachment_pos:02d}_{attachment_id}_{safe_filename(attachment_name)}"
-            file_path = course_dir / filename
-            
-            rename_if_needed(course_dir, filename, attachment_id)
-
-            # check if file exists based on attachment_id
-            existing_file = find_file_by_partial_name(course_dir, f"_{attachment_id}_")
-            if existing_file:
-                logger.info(
-                    f"Skipping download: File with attachment ID {attachment_id} already exists: {existing_file.name}"
-                )
-                task_manager.download_task_done()
-                continue
-
-            attachment_url = task.get('attachment_url')
-            if not attachment_url: # <-- Check for missing URL
-                logger.warning(f"Skipping task: Missing attachment URL for attachment ID {attachment_id}")
-                task_manager.download_task_done() # Important: Mark task as done even if skipped
-                continue
-
-            with tqdm(
-                total=100,
-                desc=f"Downloading {filename}",
-                unit="%",
-                leave=False,
-            ) as progress_bar:
-                try:
-                    success = download_file(attachment_url, file_path, progress_bar)
-                    if success:
-                        logger.info(f"Downloaded: {filename}")
-                    else:
-                        logger.error(f"Failed to download: {filename}")
-                except Exception as e:
-                    logger.exception(f"Error downloading {filename}: {e}")
-
-            # Mark the task as done only AFTER successful processing or error handling.
-            task_manager.download_task_done()
-        except queue.Empty:
-            logger.debug("Download queue is empty.")
-            if task_manager.is_download_queue_empty() and task_manager.processing_done.is_set():
-                break
-            time.sleep(0.5)
+            time.sleep(1)
+            continue # Go back to the beginning of the loop
         except Exception as e:
             logger.exception(f"Unexpected error in download_worker {thread_index}: {e}")
             traceback.print_exc()
+            continue
+        except KeyboardInterrupt: # Make sure to catch in here also
+            logger.warning("Keyboard interrupt received. Exiting download_worker.")
+            break
+
+        if task is None: # Check None only after fetching
+            task_manager.download_task_done()  # Crucial: Mark the sentinel task as done
+            logger.debug(f"   \\ None")
+            break   # Exit worker thread when it gets sentinel value (None)
+        
+        module_pos = task.get('module_position', '')
+        lecture_pos = task.get('lecture_position', '')
+        attachment_pos = task.get('attachment_position', '')
+        attachment_id = task.get('attachment_id', '')
+        attachment_name = task.get('attachment_name', '')
+        attachment_url = task.get('attachment_url')
+
+        # Skip if attachment type is not valid
+        if task["attachment_kind"] not in valid_types:
+            task_manager.download_task_done()
+            continue
+
+        filename = f"{module_pos:02d}_{lecture_pos:02d}_{attachment_pos:02d}_{attachment_id}_{safe_filename(attachment_name)}"
+        file_path = course_dir / filename
+        
+        rename_if_needed(course_dir, filename, attachment_id)
+
+        # check if file exists based on attachment_id
+        existing_file = find_file_by_partial_name(course_dir, f"_{attachment_id}_")
+        if existing_file:
+            logger.info(
+                f"Skipping download: File with attachment ID {attachment_id} already exists: {existing_file.name}"
+            )
+            task_manager.download_task_done()
+            continue
+
+        attachment_url = task.get('attachment_url')
+        if not attachment_url: # <-- Check for missing URL
+            logger.warning(f"Skipping task: Missing attachment URL for attachment ID {attachment_id}")
+            task_manager.download_task_done() # Important: Mark task as done even if skipped
+            continue
+
+        with tqdm(
+            total=100,
+            desc=f"Downloading {filename}",
+            unit="%",
+            leave=False,
+        ) as progress_bar:
+            try:
+                success = download_file(attachment_url, file_path, progress_bar)
+                if success:
+                    logger.info(f"Downloaded: {filename}")
+                else:
+                    logger.error(f"Failed to download: {filename}")
+            except Exception as e:
+                logger.exception(f"Error downloading {filename}: {e}")
+
+        # Mark the task as done only AFTER successful processing or error handling.
+        task_manager.download_task_done()
+
 
     logger.info(f"Download worker {thread_index} finished.")
 
@@ -586,6 +668,8 @@ def download_file(
     """Downloads a file using requests with a tqdm progress bar (thread-safe)."""
     try:
         response = requests.get(url, stream=True, timeout=120)
+        logger.debug(f"download_file - Requesting URL: {url}, Status code: {response.status_code}, Headers: {response.headers}")
+
         response.raise_for_status()
 
         file_size = int(response.headers.get("Content-Length", 0))
@@ -748,7 +832,8 @@ def main() -> None:
     """
     Main function to handle command-line arguments and execute course operations.
     """
-    import argparse
+
+    signal.signal(signal.SIGINT, signal_handler)
 
     parser = argparse.ArgumentParser(
         description="Manage and download course data from Teachable."
@@ -818,6 +903,7 @@ def main() -> None:
 
 
     api_client = TeachableAPIClient(api_key=os.environ.get("TEACHABLE_API_KEY"))
+    download_threads = []
 
     try:
         task_manager = TaskManager()
@@ -832,7 +918,7 @@ def main() -> None:
             # Start course processing and download threads
             course_thread = threading.Thread(
                 name="CourseProcessor", 
-                target=course_processor, args=(task_manager, api_client, args.output)
+                target=course_worker, args=(task_manager, api_client, args.output)
             )
             course_thread.start()
 
@@ -853,12 +939,23 @@ def main() -> None:
             logger.debug("Wait for the course processor thread to finish.")
             # Wait for the course processor thread to finish
             course_thread.join()
+            logger.debug(f"Course thread finished. Active threads: {[t.name for t in threading.enumerate() if t.is_alive()]}")
 
-            logger.debug("Wait for download worker threads to finish.")
-            # Wait for download worker threads to finish
+
+            # NOW join the download threads *after* course processing
             for thread in download_threads:
                 thread.join()
-            
+
+            logger.info("All threads finished.")  # This should also print
+
+            try:
+                while any(thread.is_alive() for thread in download_threads):
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                logger.warning("Keyboard interrupt received. Waiting for threads to exit gracefully...")
+                stop_event.set() # set event for any waiting download threads
+
+            logger.info("All downloads completed.")            
 
     except KeyboardInterrupt:
         logger.warning("Keyboard interrupt received; attempting graceful shutdown...")
@@ -868,11 +965,7 @@ def main() -> None:
     except Exception as e:  # Catch other potential exceptions
         logger.exception(f"An unexpected error occurred: {e}")
     finally:
-        if course_thread:
-            course_thread.join()
-        for thread in download_threads:
-            thread.join()
-        logger.info("All threads finished.")
+        pass
 
 if __name__ == "__main__":
     main()
