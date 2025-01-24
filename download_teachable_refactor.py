@@ -31,7 +31,7 @@ load_dotenv()
 logger.add(
     sys.stderr, format="{time} {level} {message}", filter="my_module", level="INFO"
 )
-logger.add("file_{time}.log", rotation="500 MB")
+logger.add("download_teachable_{time:YYYY-MM-DD}.log", rotation="500 MB")
 
 # --- Helper Functions ---
 def sleep_with_interrupt(duration: float) -> bool:
