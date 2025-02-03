@@ -313,6 +313,7 @@ class TeachableAPIClient:
         try:
             # Get response but keep it in the context manager
             async with await self._handle_rate_limit(self.session, url) as response:
+                if not response.status == 200:
                 logger.debug(f"Response status: {response.status}")
                 # logger.debug(f"Response headers: {response.headers}")
                 
@@ -324,7 +325,7 @@ class TeachableAPIClient:
                 try:
                     # Use response.json() directly which handles gzip and chunked encoding
                     data = await response.json()
-                    logger.debug(f"Successfully parsed JSON response for {url}")
+                    # logger.debug(f"Successfully parsed JSON response for {url}")
                     return data
                 except Exception as e:
                     # If JSON parsing fails, try to get the raw text for debugging
@@ -494,9 +495,14 @@ async def download_file(
                             if not chunk:
                                 break
                             out_file.write(chunk)
+                    
+                    # Debug output with filesize in MB
+                    if not file_path.stat().st_size == 0:
+                        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+                        logger.debug(f"Downloaded: {file_path.name} ({file_size_mb:.2f} MB)")
 
-            logger.info(f"Downloaded: {file_path.name}")
-            return True
+                    logger.info(f"Downloaded: {file_path.name}")
+                    return True
         except aiohttp.ClientError as e:
             logger.error(f"Error downloading {url}: {e}")
             if file_path.exists():
