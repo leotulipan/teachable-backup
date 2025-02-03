@@ -314,8 +314,8 @@ class TeachableAPIClient:
             # Get response but keep it in the context manager
             async with await self._handle_rate_limit(self.session, url) as response:
                 if not response.status == 200:
-                logger.debug(f"Response status: {response.status}")
-                # logger.debug(f"Response headers: {response.headers}")
+                    logger.debug(f"Response status: {response.status}")
+                    # logger.debug(f"Response headers: {response.headers}")
                 
                 if response.status >= 400:
                     error_text = await response.text()
@@ -475,7 +475,9 @@ async def download_file(
 
     async with semaphore:  # Limit concurrency here
         try:
-            async with aiohttp.ClientSession() as session:
+            # Create a session with extended timeout for large files
+            timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as response:
                     if response.status >= 400:
                         logger.error(f"Download failed [{response.status}]: {url}")
@@ -489,22 +491,47 @@ async def download_file(
                         logger.warning(f"File size mismatch, re-downloading: {file_path.name}")
                         file_path.unlink()
 
-                    with open(file_path, "wb") as out_file:
-                        while True:
-                            chunk = await response.content.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            out_file.write(chunk)
+                    try:
+                        with open(file_path, "wb") as out_file:
+                            # Use larger chunk size for better performance
+                            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+                            downloaded = 0
+                            async for chunk in response.content.iter_chunked(chunk_size):
+                                if not chunk:
+                                    break
+                                out_file.write(chunk)
+                                downloaded += len(chunk)
+                                if file_size:
+                                    progress = (downloaded / file_size) * 100
+                                    if downloaded % (50 * 1024 * 1024) == 0:  # Log every 50MB
+                                        logger.debug(f"Downloading {file_path.name}: {progress:.1f}%")
                     
-                    # Debug output with filesize in MB
-                    if not file_path.stat().st_size == 0:
-                        file_size_mb = file_path.stat().st_size / (1024 * 1024)
-                        logger.debug(f"Downloaded: {file_path.name} ({file_size_mb:.2f} MB)")
+                        # Debug output with filesize in MB
+                        if not file_path.stat().st_size == 0:
+                            file_size_mb = file_path.stat().st_size / (1024 * 1024)
+                            logger.debug(f"Downloaded: {file_path.name} ({file_size_mb:.2f} MB)")
 
-                    logger.info(f"Downloaded: {file_path.name}")
-                    return True
+                        logger.info(f"Downloaded: {file_path.name}")
+                        return True
+
+                    except Exception as e:
+                        logger.error(f"Error while writing file {file_path.name}: {e}")
+                        if file_path.exists():
+                            file_path.unlink()
+                        return False
+
+        except asyncio.TimeoutError as e:
+            logger.error(f"Timeout downloading {url}: {e}")
+            if file_path.exists():
+                file_path.unlink()
+            return False
         except aiohttp.ClientError as e:
             logger.error(f"Error downloading {url}: {e}")
+            if file_path.exists():
+                file_path.unlink()
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error downloading {url}: {e}")
             if file_path.exists():
                 file_path.unlink()
             return False
