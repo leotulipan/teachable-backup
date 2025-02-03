@@ -1,0 +1,40 @@
+uv run .\download_teachable_courses.py --id 42072   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 2587150 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 323424  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 53223   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 461173  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 2463001 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 54385   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 2596287 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 2448039 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 2283477 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 2665307 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 41302  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 249837 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 25412  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+uv run .\download_teachable_courses.py --id 25412  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 352710  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 317604  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 82286   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 42423   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 53614   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 2542182 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 2464730 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 2221627 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 2155884 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 1028039 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 42415   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+
+REM ABER NEUER DLD? uv run .\download_teachable_courses.py --id 57103   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+
+REM uv run .\download_teachable_courses.py --id 49266   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM Essens-Revolution: Evolutionäre Ernährung
+	REM	uv run .\download_teachable_courses.py --id 42414   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+
+
+REM uv run .\download_teachable_courses.py --id 42303   --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 234391  --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+
+REM div by zero
+REM uv run .\download_teachable_courses.py --id 1054462 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
+REM uv run .\download_teachable_courses.py --id 1054548 --overwrite_course_csv --download -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup"
