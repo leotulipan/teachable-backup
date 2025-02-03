@@ -176,10 +176,14 @@ def clean_text(text: str) -> str:
     except UnicodeDecodeError:
         return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
-def normalize_utf_filename(filename: str) -> str:
-    """Normalizes a filename by removing unsafe characters and enforcing length limits."""
-    normalized_filename = unicodedata.normalize("NFKD", filename)
-    return safe_filename(normalized_filename)
+
+def normalize_utf_filename(attachment_name: str | None) -> str | None:
+    if isinstance(attachment_name, str) and attachment_name not in (None, ""):
+        try:
+            attachment_name = unicodedata.normalize("NFC", attachment_name)
+        except Exception as e:
+            logger.error(f"Error normalizing name: '{attachment_name}' {e}")
+    return attachment_name
 
 def process_lecture_data(
     lecture: Dict[str, Any], course_id: int, course_name: str, section_position: int, section_name: str
@@ -247,16 +251,21 @@ class TeachableAPIClient:
         while retries < self.max_retries:
             if self._stop:
                 raise asyncio.CancelledError("API client stopped.")
+            
             async with self.api_calls_semaphore:  # <--- concurrency-limited
                 logger.debug(f"Requesting URL: {url} (Retry {retries})")
                 try:
-                    async with session.get(url, headers=self.headers) as response:
-                        if response.status != 429:
-                            logger.debug(f"Received {response} response.")
-                            return response
-
+                    response = await session.get(url, headers=self.headers)
+                    
+                    # Check status code first
+                    if response.status == 429:
+                        # Read headers but don't consume body for 429
                         logger.debug(f"Received 429 response. Rate limit headers: {response.headers}")
                         reset_time_str = response.headers.get("RateLimit-Reset", "")
+                        
+                        # Close this response since we'll retry
+                        await response.release()
+                        
                         if reset_time_str.isdigit():
                             delay = int(reset_time_str)
                             logger.warning(f"Rate limit reached. Retrying after {delay} seconds (RateLimit-Reset).")
@@ -265,6 +274,11 @@ class TeachableAPIClient:
                             logger.warning(f"Rate limit reached; no valid 'RateLimit-Reset'. Retrying in {delay}s.")
                         await asyncio.sleep(delay)
                         retries += 1
+                        continue
+                    
+                    # For any other status, return the response to be handled by caller
+                    return response
+                    
                 except aiohttp.ClientError as e:
                     logger.error(f"HTTP error when fetching {url}: {e}")
                     raise
@@ -297,39 +311,33 @@ class TeachableAPIClient:
             url = f"{url}?{query_str}"
 
         try:
-            response = await self._handle_rate_limit(self.session, url)
-        except Exception as e:
-            logger.error(f"Exception occurred while fetching URL {url} in _handle_rate_limit: {e}")
+            # Get response but keep it in the context manager
+            async with await self._handle_rate_limit(self.session, url) as response:
+                logger.debug(f"Response status: {response.status}")
+                # logger.debug(f"Response headers: {response.headers}")
+                
+                if response.status >= 400:
+                    error_text = await response.text()
+                    logger.error(f"Error response for URL {url}: {response.status} - {error_text}")
+                    response.raise_for_status()
+
+                try:
+                    # Use response.json() directly which handles gzip and chunked encoding
+                    data = await response.json()
+                    logger.debug(f"Successfully parsed JSON response for {url}")
+                    return data
+                except Exception as e:
+                    # If JSON parsing fails, try to get the raw text for debugging
+                    text = await response.text()
+                    logger.error(f"Failed to parse JSON from response. URL={url}, Error={e}")
+                    logger.error(f"Raw response text: {text[:1000]}...")  # First 1000 chars
+                    raise
+
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP error for {url}: {str(e)}")
             raise
-
-        if response.status >= 400:
-            # Use .read() to download all content even if chunked
-            error_bytes = await response.read()
-            logger.error(
-                f"Error response for URL {url}: {response.status} - "
-                f"{error_bytes[:500].decode(errors='replace')}..."  # log a partial preview
-            )
-            response.raise_for_status()
-
-        # If we get here, we have a 2xx or 3xx response
-        # Force a full read of the body before parsing,
-        # so we can catch chunked / partial data errors
-        try:
-            raw_bytes = await response.read()
-            logger.debug(f"Successfully read {len(raw_bytes)} bytes from URL {url}.")
         except Exception as e:
-            logger.error(f"Could not read body for URL {url}: {e}")
-            raise
-
-        # Convert bytes to string and parse JSON
-        try:
-            raw_text = raw_bytes.decode(errors="replace")
-            logger.debug(f"Raw text (first 500 chars) for {url}: {raw_text[:500]}...")
-            json_data = aiohttp.helpers.json_loads(raw_text)
-            logger.debug(f"parsed JSON for {url}: {json_data}")
-            return json_data
-        except Exception as e:
-            logger.error(f"Failed to parse JSON from body. URL={url}, Error={e}\nRaw text:\n{raw_text}")
+            logger.error(f"Unexpected error for {url}: {str(e)}")
             raise
 
     async def get_all_courses(self) -> List[Dict[str, Any]]:
@@ -573,7 +581,7 @@ async def process_course(
                 await rename_if_needed(course_dir, filename, str(attachment["id"]))
                 existing_file = find_file_by_partial_name(course_dir, f"_{attachment['id']}_")
                 if existing_file:
-                    logger.info(f"Skipping download: File for attachment {course_dir}/{attachment['id']} already exists.")
+                    logger.info(f"Skipping download: File for attachment {attachment['id']} already exists.")
                     continue
 
                 # Queue async download
