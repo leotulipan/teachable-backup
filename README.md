@@ -4,20 +4,18 @@
 
 ## To-Dos
 
+[ ] Start Downloading already while course details are being fetched
+  refactor_queuing_plan.md
 [ ] CSV Format of refactor not correct ("id";"description";"name";"heading";"is_published";"image_url")
-    [ ] CSV -> Save as Excel or DE Windows Format CSV (easy open in Excel)
-[ ] Quiz Download? Test/Does it work?
-[ ] Prevent Double Downloading: Enhance existing checks to avoid redundant downloads.
-    -> move/rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
-[ ] File Naming and Indexing: Assign and manage index numbers for modules and lectures.
-[x] Subtitle Availability Detection: Determine and record whether subtitles exist for each video.
-    -> see captions captions_fronend_api.md
+  CSV -> Save as Excel or DE Windows Format CSV (easy open in Excel)
 [ ] User Info
     Page through users  <https://developers.teachable.com/v1/users?page=50&per=20>
     Get each ID and save the json <https://developers.teachable.com/v1/users/user_id>
     see saved example jsons
-[x] Video Length Retrieval: Extract and store the duration of each video.
-    -> media_duration field in csv
+[ ] Quiz Download? Test/Does it work?
+[ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
+[ ] (optional) File Naming and Indexing: Assign and manage index numbers for modules and lectures.
+
 
 ## Prerequisites
 
