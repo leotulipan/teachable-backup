@@ -700,7 +700,10 @@ async def process_course(
                 logger.warning(f"Skipping lecture due to lecture ID filter: {lecture['name']}")
                 continue
 
-            logger.info(f"    Processing lecture: {lecture['name']}")
+            lecture_name = lecture['name']
+            if len(lecture_name) > 76:
+                lecture_name = lecture_name[:76] + "..."
+            logger.info(f"    Processing lecture: {lecture_name}")
             for attachment in lecture["attachments"]:
                 attachment_kind = attachment.get("kind")
                 if attachment_kind is None:
