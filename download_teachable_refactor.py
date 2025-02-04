@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import asyncio
 import aiohttp
+import signal
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -573,14 +574,18 @@ async def download_file(
                                 logger.info(f"Resuming {format_filename_for_log(file_path.name)} from {start_pos / (1024*1024):.2f}MB")
                             
                             async for chunk in response.content.iter_chunked(chunk_size):
-                                if not chunk:
-                                    break
-                                out_file.write(chunk)
-                                downloaded += len(chunk)
-                                if file_size:
-                                    progress = (downloaded / file_size) * 100
-                                    if downloaded % (50 * 1024 * 1024) == 0:  # Log every 50MB
-                                        logger.debug(f"{progress:.1f}%")
+                                try:
+                                    if not chunk:
+                                        break
+                                    out_file.write(chunk)
+                                    downloaded += len(chunk)
+                                    if file_size:
+                                        progress = (downloaded / file_size) * 100
+                                        if downloaded % (50 * 1024 * 1024) == 0:  # Log every 50MB
+                                            logger.debug(f"{progress:.1f}%")
+                                except asyncio.CancelledError:
+                                    logger.info(f"Download interrupted for {format_filename_for_log(file_path.name)}")
+                                    return False
 
                         # Verify file size after download
                         if partial_path.stat().st_size != file_size:
@@ -763,9 +768,16 @@ async def process_course(
     save_data_to_csv(processed_data, course_data_path)
     logger.info(f"Course data saved to {course_data_path}. Now downloading attachments...")
 
-    # Run all download tasks concurrently
-    await asyncio.gather(*download_tasks)
-    logger.info(f"All downloads for course {course_id} finished.")
+    # Run all download tasks concurrently with graceful cancellation handling
+    try:
+        await asyncio.gather(*download_tasks)
+        logger.info(f"All downloads for course {course_id} finished.")
+    except asyncio.CancelledError:
+        logger.info(f"Downloads interrupted for course {course_id}. Progress saved.")
+        return
+    except Exception as e:
+        logger.error(f"Error processing course {course_id}: {e}")
+        return
 
 async def main() -> None:
     """
@@ -809,52 +821,76 @@ async def main() -> None:
         args.types.append("pdf_embed")
         args.types.remove("pdf")
 
-    async with TeachableAPIClient(api_key=os.environ.get("TEACHABLE_API_KEY", "")) as api_client:
-        # ------------------------------------------------------------------
-        # Handle the new "test-snippet" subcommand
-        # ------------------------------------------------------------------
-        if args.operation == "test-snippet":
-            # This precisely replicates the "requests" snippet:
-            url = "/courses"
-            params = {"page": 1, "per": 2}
-            # The next call uses our existing TeachableAPIClient.get()
-            # method, which includes concurrency-limits, rate-limit logic, etc.
-            try:
-                data = await api_client.get(url, params=params)
-                # Print the raw JSON dict
-                import json
-                print(json.dumps(data, indent=2, ensure_ascii=False))
-            except Exception as exc:
-                logger.error(f"Error while fetching test snippet data: {exc}")
+    async def shutdown():
+        """Cleanup tasks tied to the service's shutdown."""
+        logger.info("Received shutdown signal...")
+        
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        
+        [task.cancel() for task in tasks]
+        
+        logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-            # End after printing the snippet
-            return
-        # ------------------------------------------------------------------
+    try:
+        async with TeachableAPIClient(api_key=os.environ.get("TEACHABLE_API_KEY", "")) as api_client:
+            if args.operation == "test-snippet":
+                # This precisely replicates the "requests" snippet:
+                url = "/courses"
+                params = {"page": 1, "per": 2}
+                # The next call uses our existing TeachableAPIClient.get()
+                # method, which includes concurrency-limits, rate-limit logic, etc.
+                try:
+                    data = await api_client.get(url, params=params)
+                    # Print the raw JSON dict
+                    import json
+                    print(json.dumps(data, indent=2, ensure_ascii=False))
+                except Exception as exc:
+                    logger.error(f"Error while fetching test snippet data: {exc}")
 
-        if args.operation == "fetch-all":
-            courses = await api_client.get_all_courses()
-            file_path = args.output / "all_courses_data.csv"
-            save_data_to_csv(courses, file_path)
-            logger.info(f"All courses saved to {file_path}")
-            return
+                # End after printing the snippet
+                return
+            elif args.operation == "fetch-all":
+                try:
+                    courses = await api_client.get_all_courses()
+                    file_path = args.output / "all_courses_data.csv"
+                    save_data_to_csv(courses, file_path)
+                    logger.info(f"All courses saved to {file_path}")
+                except asyncio.CancelledError:
+                    logger.info("Operation interrupted. Progress saved.")
+                    return
+            elif args.operation == "process":
+                # Setup a semaphore for concurrency-limited downloads
+                semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-        if args.operation == "process":
-            # Setup a semaphore for concurrency-limited downloads
-            semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+                try:
+                    for course_id in args.course_ids:
+                        await process_course(
+                            api_client,
+                            course_id,
+                            args.module_id,
+                            args.lecture_id,
+                            args.output,
+                            args.types,
+                            semaphore
+                        )
+                except asyncio.CancelledError:
+                    logger.info("Processing interrupted. Progress saved.")
+                    return
 
-            for course_id in args.course_ids:
-                # Process one course at a time, but attachments for that course download concurrently
-                await process_course(
-                    api_client,
-                    course_id,
-                    args.module_id,
-                    args.lecture_id,
-                    args.output,
-                    args.types,
-                    semaphore
-                )
-    logger.info("All tasks finished.")
+        logger.info("All tasks completed successfully.")
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt. Shutting down gracefully...")
+        await shutdown()
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise
+    finally:
+        logger.info("Cleanup complete.")
 
-# Updated entry point for async
+# Updated entry point with proper signal handling for Windows
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt. Shutting down gracefully...")
