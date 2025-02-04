@@ -494,12 +494,19 @@ async def rename_if_needed(directory: pathlib.Path, new_filename: str, attachmen
                 logger.error(f"Error renaming file: {e}")
 
 async def download_file(
-    url: str, file_path: pathlib.Path, semaphore: asyncio.Semaphore
+    url: str, file_path: pathlib.Path, semaphore: asyncio.Semaphore,
+    course_info: Optional[Dict[str, Any]] = None  # Add course info parameter
 ) -> bool:
     """
     Asynchronously downloads a file using aiohttp with a bounded semaphore for concurrency.
     Downloads to a .partial file first, then renames on successful completion.
     Supports resuming downloads if the server allows it.
+    
+    Args:
+        url: The URL to download from
+        file_path: Where to save the file
+        semaphore: Concurrency limiter
+        course_info: Optional dict containing course/lecture context for better error messages
     """
     if not url:
         logger.warning("Skipping download: Missing URL.")
@@ -508,8 +515,21 @@ async def download_file(
     # Create partial download path
     partial_path = file_path.with_suffix(file_path.suffix + '.partial')
     RESUME_SAFETY_MARGIN = 1024 * 1024  # 1MB safety margin for resuming
+    SMALL_FILE_THRESHOLD = 50 * 1024 * 1024  # 50MB threshold for size mismatch tolerance
 
-    async with semaphore:  # Limit concurrency here
+    def format_error_context() -> str:
+        """Helper to format error context from course_info if available"""
+        if not course_info:
+            return ""
+        return (
+            f"\nContext:"
+            f"\n  Course: {course_info.get('course_name', 'Unknown')} (ID: {course_info.get('course_id', 'Unknown')})"
+            f"\n  Module: {course_info.get('module_name', 'Unknown')} (ID: {course_info.get('module_id', 'Unknown')})"
+            f"\n  Lecture: {course_info.get('lecture_name', 'Unknown')} (ID: {course_info.get('lecture_id', 'Unknown')})"
+            f"\n  Attachment ID: {course_info.get('attachment_id', 'Unknown')}"
+        )
+
+    async with semaphore:
         try:
             timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -518,11 +538,23 @@ async def download_file(
                     supports_resume = "Accept-Ranges" in head_response.headers
                     file_size = int(head_response.headers.get("Content-Length", 0))
                     
-                    if file_path.exists() and file_path.stat().st_size == file_size:
-                        logger.info(f"File already exists and is complete: {format_filename_for_log(file_path.name)}")
-                        if partial_path.exists():
-                            partial_path.unlink()
-                        return True
+                    # If file exists and is larger than expected for small files, consider it complete
+                    if file_path.exists():
+                        actual_size = file_path.stat().st_size
+                        if actual_size >= file_size and file_size <= SMALL_FILE_THRESHOLD:
+                            logger.warning(
+                                f"File size larger than expected for {format_filename_for_log(file_path.name)}. "
+                                f"Expected: {file_size}, Got: {actual_size}. "
+                                f"File is under {SMALL_FILE_THRESHOLD/(1024*1024)}MB - keeping existing file."
+                            )
+                            if partial_path.exists():
+                                partial_path.unlink()
+                            return True
+                        elif actual_size == file_size:
+                            logger.info(f"File already exists and is complete: {format_filename_for_log(file_path.name)}")
+                            if partial_path.exists():
+                                partial_path.unlink()
+                            return True
 
                 # Determine start position for resume
                 start_pos = 0
@@ -552,7 +584,10 @@ async def download_file(
 
                 async with session.get(url, headers=headers) as response:
                     if response.status >= 400:
-                        logger.error(f"Download failed [{response.status}]: {url}")
+                        logger.error(
+                            f"Download failed [{response.status}]: {url}"
+                            f"{format_error_context()}"
+                        )
                         return False
 
                     try:
@@ -592,14 +627,25 @@ async def download_file(
                                     logger.info(f"Download interrupted for {format_filename_for_log(file_path.name)}")
                                     return False
 
-                        # Verify file size after download
-                        if partial_path.stat().st_size != file_size:
-                            logger.error(
-                                f"File size mismatch for {format_filename_for_log(file_path.name)}. "
-                                f"Expected: {file_size}, Got: {partial_path.stat().st_size}"
-                            )
-                            logger.error(f"Download URL for manual attempt: {url}")
-                            return False
+                        # Modified size verification
+                        actual_size = partial_path.stat().st_size
+                        if actual_size != file_size:
+                            if actual_size > file_size and file_size <= SMALL_FILE_THRESHOLD:
+                                logger.warning(
+                                    f"File size larger than expected for {format_filename_for_log(file_path.name)}. "
+                                    f"Expected: {file_size}, Got: {actual_size}. "
+                                    f"File is under {SMALL_FILE_THRESHOLD/(1024*1024)}MB - keeping downloaded file."
+                                )
+                                partial_path.rename(file_path)
+                                return True
+                            else:
+                                logger.error(
+                                    f"File size mismatch for {format_filename_for_log(file_path.name)}. "
+                                    f"Expected: {file_size}, Got: {actual_size}"
+                                    f"{format_error_context()}"
+                                )
+                                logger.error(f"Download URL for manual attempt: {url}")
+                                return False
 
                         # Rename partial file to final filename on success
                         partial_path.rename(file_path)
@@ -617,13 +663,15 @@ async def download_file(
 
         except asyncio.TimeoutError as e:
             logger.error(
-                f"Timeout downloading {format_filename_for_log(file_path.name)}: {e}\n"
+                f"Timeout downloading {format_filename_for_log(file_path.name)}: {e}"
+                f"{format_error_context()}\n"
                 f"Download URL for manual attempt: {url}"
             )
             return False
         except aiohttp.ClientError as e:
             logger.error(
-                f"Network error downloading {format_filename_for_log(file_path.name)}: {e}\n"
+                f"Network error downloading {format_filename_for_log(file_path.name)}: {e}"
+                f"{format_error_context()}\n"
                 f"Error type: {type(e).__name__}\n"
                 f"Error details: {str(e)}\n"
                 f"Download URL for manual attempt: {url}"
@@ -649,6 +697,22 @@ class DownloadTask:
     attachment_id: int
     attachment_name: str
     file_size: Optional[int] = None
+    course_name: Optional[str] = None
+    module_id: Optional[int] = None
+    module_name: Optional[str] = None
+    lecture_name: Optional[str] = None
+
+    def to_context_dict(self) -> Dict[str, Any]:
+        """Convert task metadata to a context dictionary for error messages"""
+        return {
+            'course_id': self.course_id,
+            'course_name': self.course_name,
+            'module_id': self.module_id,
+            'module_name': self.module_name,
+            'lecture_id': self.lecture_id,
+            'lecture_name': self.lecture_name,
+            'attachment_id': self.attachment_id
+        }
 
 class DownloadManager:
     """Centralized download manager for handling concurrent downloads"""
@@ -747,7 +811,12 @@ class DownloadManager:
     async def _process_download(self, task: DownloadTask) -> None:
         """Process a single download task"""
         async with self.semaphore:
-            await download_file(task.url, task.file_path, self.semaphore)
+            await download_file(
+                task.url, 
+                task.file_path, 
+                self.semaphore,
+                course_info=task.to_context_dict()
+            )
 
     async def wait_for_downloads(self) -> None:
         """Wait for all queued downloads to complete"""
