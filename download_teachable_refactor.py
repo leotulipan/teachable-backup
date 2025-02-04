@@ -14,6 +14,8 @@ import signal
 
 from dotenv import load_dotenv
 from loguru import logger
+from dataclasses import dataclass
+from asyncio import Queue
 
 # Constants
 API_MAX_CONCURRENT_CALLS = 2  # <--- Limit total Teachable API calls at once
@@ -527,8 +529,13 @@ async def download_file(
                 if partial_path.exists() and supports_resume:
                     partial_size = partial_path.stat().st_size
                     if partial_size > RESUME_SAFETY_MARGIN:
-                        start_pos = partial_size - RESUME_SAFETY_MARGIN
-                        logger.info(f"Resuming download of {format_filename_for_log(file_path.name)} from position {start_pos:,} bytes")
+                        # Calculate the actual start position, accounting for the safety margin
+                        start_pos = max(0, partial_size - RESUME_SAFETY_MARGIN)
+                        logger.info(f"Resuming {format_filename_for_log(file_path.name)} from {start_pos / (1024*1024):.2f}MB")
+                        
+                        # Truncate the partial file to remove potentially corrupted data
+                        with open(partial_path, "ab") as f:
+                            f.truncate(start_pos)
                     else:
                         logger.info(f"Partial file too small to resume, starting fresh download of {format_filename_for_log(file_path.name)}")
                         partial_path.unlink()
@@ -539,7 +546,7 @@ async def download_file(
                     logger.info(f"Incomplete file found, restarting download of {format_filename_for_log(file_path.name)}")
 
                 # Prepare headers for resume if needed
-                headers = {"Accept-Ranges": "bytes"}
+                headers = {}
                 if start_pos > 0:
                     headers["Range"] = f"bytes={start_pos}-"
 
@@ -570,8 +577,6 @@ async def download_file(
                             
                             if start_pos == 0:
                                 logger.info(f"Downloading {format_filename_for_log(file_path.name)} ({file_size / (1024*1024):.2f} MB)")
-                            else:
-                                logger.info(f"Resuming {format_filename_for_log(file_path.name)} from {start_pos / (1024*1024):.2f}MB")
                             
                             async for chunk in response.content.iter_chunked(chunk_size):
                                 try:
@@ -609,15 +614,6 @@ async def download_file(
                             f"Download URL for manual attempt: {url}"
                         )
                         return False
-                    except Exception as e:
-                        logger.error(
-                            f"Error while writing file {format_filename_for_log(file_path.name)}: {e}\n"
-                            f"Error type: {type(e).__name__}\n"
-                            f"Error details: {str(e)}\n"
-                            f"Traceback:\n{traceback.format_exc()}\n"
-                            f"Download URL for manual attempt: {url}"
-                        )
-                        return False
 
         except asyncio.TimeoutError as e:
             logger.error(
@@ -643,6 +639,126 @@ async def download_file(
             )
             return False
 
+@dataclass
+class DownloadTask:
+    """Represents a single download task with all necessary metadata"""
+    url: str
+    file_path: pathlib.Path
+    course_id: int
+    lecture_id: int
+    attachment_id: int
+    attachment_name: str
+    file_size: Optional[int] = None
+
+class DownloadManager:
+    """Centralized download manager for handling concurrent downloads"""
+    def __init__(self, max_concurrent: int = MAX_CONCURRENT_DOWNLOADS):
+        self.queue: Queue[DownloadTask] = Queue()
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.active_downloads: Dict[int, asyncio.Task] = {}
+        self._stop = False
+        self._consumers: List[asyncio.Task] = []
+        self._started = False  # New flag to track if consumers are running
+
+    def stop(self) -> None:
+        """Signal the download manager to stop processing new downloads"""
+        self._stop = True
+        # Cancel all active downloads
+        for task in self.active_downloads.values():
+            if not task.done():
+                task.cancel()
+        # Cancel all consumers
+        for consumer in self._consumers:
+            if not consumer.done():
+                consumer.cancel()
+
+    async def ensure_consumers_running(self, num_consumers: int = 3) -> None:
+        """Ensures consumers are running, starts them if not"""
+        if not self._started:
+            await self.start_consumers(num_consumers)
+            self._started = True
+
+    async def add_task(self, task: DownloadTask) -> None:
+        """Add a new download task to the queue and ensure consumers are running"""
+        if self._stop:
+            return
+        # Ensure consumers are running before adding task
+        await self.ensure_consumers_running()
+        await self.queue.put(task)
+
+    async def start_consumers(self, num_consumers: int = 3) -> None:
+        """Start consumer tasks to process downloads"""
+        self._consumers = [
+            asyncio.create_task(self._consumer_worker(f"consumer-{i}"))
+            for i in range(num_consumers)
+        ]
+
+    async def _consumer_worker(self, worker_id: str) -> None:
+        """Worker that processes download tasks from the queue"""
+        while not self._stop:
+            try:
+                task = await self.queue.get()
+                if task is None:  # Sentinel value for shutdown
+                    break
+
+                # Check if file already exists and is complete
+                if await self._is_file_complete(task):
+                    self.queue.task_done()
+                    continue
+
+                # Process the download
+                download_task = asyncio.create_task(
+                    self._process_download(task)
+                )
+                self.active_downloads[task.attachment_id] = download_task
+                
+                try:
+                    await download_task
+                except asyncio.CancelledError:
+                    logger.info(f"Download cancelled for {task.attachment_name}")
+                except Exception as e:
+                    logger.error(f"Error downloading {task.attachment_name}: {e}")
+                finally:
+                    self.active_downloads.pop(task.attachment_id, None)
+                    self.queue.task_done()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in consumer {worker_id}: {e}")
+
+    async def _is_file_complete(self, task: DownloadTask) -> bool:
+        """Check if the file already exists and is complete"""
+        if not task.file_path.exists():
+            return False
+            
+        if task.file_size is None:
+            # Fetch file size from server if not provided
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.head(task.url) as response:
+                        task.file_size = int(response.headers.get("Content-Length", 0))
+            except Exception as e:
+                logger.error(f"Error fetching file size for {task.attachment_name}: {e}")
+                return False
+
+        return task.file_path.stat().st_size == task.file_size
+
+    async def _process_download(self, task: DownloadTask) -> None:
+        """Process a single download task"""
+        async with self.semaphore:
+            await download_file(task.url, task.file_path, self.semaphore)
+
+    async def wait_for_downloads(self) -> None:
+        """Wait for all queued downloads to complete"""
+        if self.queue.empty() and not self.active_downloads:
+            return
+            
+        await self.queue.join()
+        # Wait for any remaining active downloads
+        if self.active_downloads:
+            await asyncio.gather(*self.active_downloads.values(), return_exceptions=True)
+
 async def process_course(
     api_client: TeachableAPIClient,
     course_id: int,
@@ -650,12 +766,9 @@ async def process_course(
     lecture_id: Optional[int],
     output_dir: pathlib.Path,
     valid_types: List[str],
-    semaphore: asyncio.Semaphore
+    download_manager: DownloadManager
 ) -> None:
-    """
-    Processes a single course (in series), then spawns async downloads for attachments
-    with concurrency limited by the semaphore.
-    """
+    """Modified to start downloads immediately when attachments are discovered"""
     try:
         course_data = await api_client.get_course(course_id)
         course_name = course_data["name"]
@@ -691,98 +804,79 @@ async def process_course(
         return
 
     processed_data = []
-    download_tasks = []
+    download_tasks = set()  # Track download tasks for this course
 
-    for section in course_content["sections"]:
-        if module_id and section["id"] != module_id:
-            continue
+    async def queue_download(attachment: Dict[str, Any], 
+                           file_path: pathlib.Path,
+                           lecture: Dict[str, Any]) -> None:
+        """Helper to queue a download and track its task"""
+        if url := attachment.get("url"):
+            download_task = DownloadTask(
+                url=url,
+                file_path=file_path,
+                course_id=course_id,
+                lecture_id=lecture["id"],
+                attachment_id=attachment["id"],
+                attachment_name=attachment.get("name", "")
+            )
+            task = asyncio.create_task(download_manager.add_task(download_task))
+            download_tasks.add(task)
 
-        logger.info(f"  Processing section: {section['name']}")
-        section_position = section["position"]
-
-        for lecture in section["lectures_detailed"]:
-            if lecture_id and lecture_id != lecture["id"]:
-                logger.warning(f"Skipping lecture due to lecture ID filter: {lecture['name']}")
+    try:
+        for section in course_content["sections"]:
+            if module_id and section["id"] != module_id:
                 continue
 
-            lecture_name = lecture['name']
-            if len(lecture_name) > 76:
-                lecture_name = lecture_name[:76] + "..."
-            logger.info(f"    Processing lecture: {lecture_name}")
-            for attachment in lecture["attachments"]:
-                attachment_kind = attachment.get("kind")
-                if attachment_kind is None:
-                    logger.warning(f"Attachment {attachment.get('name', 'Unnamed')} has no 'kind'. Skipping.")
-                    continue
-                if attachment_kind not in valid_types:
+            logger.info(f"  Processing section: {section['name']}")
+            section_position = section["position"]
+
+            for lecture in section["lectures_detailed"]:
+                if lecture_id and lecture_id != lecture["id"]:
                     continue
 
-                attachment_name = normalize_utf_filename(attachment.get("name") or "")
-                filename = f"{section_position:02d}_{lecture['position']:02d}_{attachment['position']:02d}_{attachment['id']}_{safe_filename(attachment_name)}"
-                file_path = course_dir / filename
+                lecture_name = lecture['name']
+                if len(lecture_name) > 76:
+                    lecture_name = lecture_name[:76] + "..."
+                logger.info(f"    Processing lecture: {lecture_name}")
 
-                await rename_if_needed(course_dir, filename, str(attachment["id"]))
-                
-                # Check for existing complete file (excluding .partial files)
-                existing_complete_file = None
-                for file in course_dir.iterdir():
-                    if (file.is_file() and 
-                        f"_{attachment['id']}_" in file.name and 
-                        not file.name.endswith('.partial')):
-                        existing_complete_file = file
-                        break
+                # Process attachments and queue downloads immediately
+                for attachment in lecture["attachments"]:
+                    attachment_kind = attachment.get("kind")
+                    if not attachment_kind or attachment_kind not in valid_types:
+                        continue
 
-                if existing_complete_file:
-                    logger.info(f"Skipping download: Complete file for attachment {attachment['id']} already exists: {format_filename_for_log(existing_complete_file.name)}")
-                    continue
+                    attachment_name = normalize_utf_filename(attachment.get("name") or "")
+                    filename = f"{section_position:02d}_{lecture['position']:02d}_{attachment['position']:02d}_{attachment['id']}_{safe_filename(attachment_name)}"
+                    file_path = course_dir / filename
 
-                # Queue async download
-                url = attachment.get("url")
-                download_tasks.append(download_file(url, file_path, semaphore))
+                    # Queue download immediately
+                    await queue_download(attachment, file_path, lecture)
 
-            # Prepare CSV data
-            processed_lecture_data = process_lecture_data(
-                lecture, 
-                course_id, 
-                course_name, 
-                section_position, 
-                section["name"]
-            )
-            processed_data.extend(processed_lecture_data)
+                # Add lecture data to processed_data for CSV
+                processed_lecture_data = process_lecture_data(
+                    lecture, 
+                    course_id, 
+                    course_name, 
+                    section_position, 
+                    section["name"]
+                )
+                processed_data.extend(processed_lecture_data)
 
-            # Save embedded text or quiz attachments if present
-            for att in lecture["attachments"]:
-                kind = att.get("kind")
-                if kind in ("text", "code_embed", "code_display"):
-                    fname = safe_filename(f"{section_position:02d}_{lecture['position']:02d}_{att['position']:02d}_{att['id']}_{att['name']}")
-                    file_path = course_dir / f"{fname}.html"
-                    if att.get("text"):
-                        save_text_attachment(att["text"], file_path)
-                elif kind == "quiz":
-                    fname = safe_filename(f"{section_position:02d}_{lecture['position']:02d}_{att['position']:02d}_{att['id']}_{att['name']}_quiz")
-                    file_path = course_dir / f"{fname}.json"
-                    if att.get("quiz"):
-                        save_json_attachment(att["quiz"], file_path)
+        # Save processed data to CSV
+        course_data_path = course_dir / "course_data.csv"
+        save_data_to_csv(processed_data, course_data_path)
+        logger.info(f"Course data saved to {course_data_path}")
 
-    # Save processed data to CSV
-    save_data_to_csv(processed_data, course_data_path)
-    logger.info(f"Course data saved to {course_data_path}. Now downloading attachments...")
+        # Wait for all downloads from this course to be queued
+        if download_tasks:
+            await asyncio.gather(*download_tasks)
 
-    # Run all download tasks concurrently with graceful cancellation handling
-    try:
-        await asyncio.gather(*download_tasks)
-        logger.info(f"All downloads for course {course_id} finished.")
-    except asyncio.CancelledError:
-        logger.info(f"Downloads interrupted for course {course_id}. Progress saved.")
-        return
     except Exception as e:
         logger.error(f"Error processing course {course_id}: {e}")
-        return
+        raise
 
 async def main() -> None:
-    """
-    Main async entry point. Handles argument parsing, sets up concurrency, and processes courses.
-    """
+    """Updated main function to use the download manager"""
     import argparse
     parser = argparse.ArgumentParser(description="Manage and download course data from Teachable.")
     subparsers = parser.add_subparsers(dest="operation", help="Operation to perform")
@@ -798,7 +892,7 @@ async def main() -> None:
 
     # ----------------------------------------------------------------------
     # NEW SUBCOMMAND: test-snippet
-    # Replicates the exact sync snippet you provided, but in async form.
+    # Replicates the sync taken from the API Docs testing
     # ----------------------------------------------------------------------
     parser_test_snippet = subparsers.add_parser(
         "test-snippet",
@@ -821,18 +915,12 @@ async def main() -> None:
         args.types.append("pdf_embed")
         args.types.remove("pdf")
 
-    async def shutdown():
-        """Cleanup tasks tied to the service's shutdown."""
-        logger.info("Received shutdown signal...")
-        
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        
-        [task.cancel() for task in tasks]
-        
-        logger.info(f"Cancelling {len(tasks)} outstanding tasks")
-        await asyncio.gather(*tasks, return_exceptions=True)
-
+    download_manager = DownloadManager(MAX_CONCURRENT_DOWNLOADS)
+    
     try:
+        # Start the download manager consumers
+        await download_manager.start_consumers()
+
         async with TeachableAPIClient(api_key=os.environ.get("TEACHABLE_API_KEY", "")) as api_client:
             if args.operation == "test-snippet":
                 # This precisely replicates the "requests" snippet:
@@ -860,9 +948,6 @@ async def main() -> None:
                     logger.info("Operation interrupted. Progress saved.")
                     return
             elif args.operation == "process":
-                # Setup a semaphore for concurrency-limited downloads
-                semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
-
                 try:
                     for course_id in args.course_ids:
                         await process_course(
@@ -872,20 +957,21 @@ async def main() -> None:
                             args.lecture_id,
                             args.output,
                             args.types,
-                            semaphore
+                            download_manager
                         )
+                    # Wait for all downloads to complete
+                    await download_manager.wait_for_downloads()
                 except asyncio.CancelledError:
-                    logger.info("Processing interrupted. Progress saved.")
+                    logger.info("Processing interrupted. Waiting for active downloads to complete...")
+                    download_manager.stop()
                     return
 
         logger.info("All tasks completed successfully.")
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Shutting down gracefully...")
-        await shutdown()
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        raise
+        download_manager.stop()
     finally:
+        await download_manager.wait_for_downloads()
         logger.info("Cleanup complete.")
 
 # Updated entry point with proper signal handling for Windows
