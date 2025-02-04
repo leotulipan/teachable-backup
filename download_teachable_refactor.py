@@ -494,6 +494,9 @@ async def download_file(
                     try:
                         with open(file_path, "wb") as out_file:
                             file_size_in_mb = file_size / (1024 * 1024)
+                            # Log initial filesize
+                            logger.info(f"Downloading {file_path.name} ({file_size_in_mb:.2f} MB)")
+                            
                             # Use larger chunk size for better performance
                             chunk_size = 8 * 1024 * 1024  # 8MB chunks
                             downloaded = 0
@@ -505,14 +508,10 @@ async def download_file(
                                 if file_size:
                                     progress = (downloaded / file_size) * 100
                                     if downloaded % (50 * 1024 * 1024) == 0:  # Log every 50MB
-                                        logger.debug(f"Downloading {file_path.name}: {progress:.1f}% of {file_size_in_mb:.2f} MB")
+                                        logger.debug(f"{progress:.1f}%")
                     
-                        # Debug output with filesize in MB
-                        if not file_path.stat().st_size == 0:
-                            file_size_mb = file_path.stat().st_size / (1024 * 1024)
-                            logger.debug(f"Downloaded: {file_path.name} ({file_size_mb:.2f} MB)")
-
-                        logger.info(f"Downloaded: {file_path.name}")
+                        # Final completion message
+                        logger.info(f"Completed: {file_path.name}")
                         return True
 
                     except Exception as e:
