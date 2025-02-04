@@ -3,9 +3,14 @@
 **Teachable Backup Script**
 
 ## To-Dos
+[ ] test latest composer changes: (2) 403 and file size mismatch + queue still running 
+  The issue is likely that tasks with 403 errors are being marked as "done" but we're still waiting for their downloads to complete. Let's fix this by properly handling task completion and queue cleanup:
+  there seems to be an issue with the active download count tracking. Let's analyze and fix this:
+    The log shows 4 file size mismatches but reports "Active downloads: 3"
+    The status reporting shows inconsistent active download counts
+    We need to ensure downloads are properly removed from active_downloads when they complete
 
-[ ] Start Downloading already while course details are being fetched
-  refactor_queuing_plan.md
+[ ] do we need process_course:854 all_courses = await api_client.get_all_courses() - cannot we fetch just this one course?
 [ ] CSV Format of refactor not correct ("id";"description";"name";"heading";"is_published";"image_url")
   CSV -> Save as Excel or DE Windows Format CSV (easy open in Excel)
 [ ] User Info
@@ -15,6 +20,7 @@
 [ ] Quiz Download? Test/Does it work?
 [ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
 [ ] (optional) File Naming and Indexing: Assign and manage index numbers for modules and lectures.
+
 
 
 ## Prerequisites
