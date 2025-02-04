@@ -220,6 +220,25 @@ def process_lecture_data(
 
     return processed_data
 
+def format_filename_for_log(filename: str, max_length: int = 25, spacer: str = '[..]') -> str:
+    """
+    Formats a filename for logging by truncating the middle if too long.
+    Keeps the extension and start of filename intact.
+    """
+    if len(filename) <= max_length:
+        return filename
+        
+    name, ext = os.path.splitext(filename)
+    if not ext:
+        return f"{filename[:max_length]}{spacer}"
+    
+    # Account for extension length in the max_length
+    available_length = max_length - len(ext)
+    if available_length <= 0:
+        return f"{filename[:max_length]}{spacer}"
+        
+    return f"{name[:available_length]}{spacer}{ext}"
+
 # --- API Client ---
 class TeachableAPIClient:
     """
@@ -477,6 +496,7 @@ async def download_file(
     """
     Asynchronously downloads a file using aiohttp with a bounded semaphore for concurrency.
     Downloads to a .partial file first, then renames on successful completion.
+    Supports resuming downloads if the server allows it.
     """
     if not url:
         logger.warning("Skipping download: Missing URL.")
@@ -484,55 +504,74 @@ async def download_file(
 
     # Create partial download path
     partial_path = file_path.with_suffix(file_path.suffix + '.partial')
+    RESUME_SAFETY_MARGIN = 1024 * 1024  # 1MB safety margin for resuming
 
     async with semaphore:  # Limit concurrency here
         try:
-            # Create a session with extended timeout for large files
             timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as response:
+                # First request to check file size and server capabilities
+                async with session.head(url, headers={"Accept-Ranges": "bytes"}) as head_response:
+                    supports_resume = "Accept-Ranges" in head_response.headers
+                    file_size = int(head_response.headers.get("Content-Length", 0))
+                    
+                    if file_path.exists() and file_path.stat().st_size == file_size:
+                        logger.info(f"File already exists and is complete: {format_filename_for_log(file_path.name)}")
+                        if partial_path.exists():
+                            partial_path.unlink()
+                        return True
+
+                # Determine start position for resume
+                start_pos = 0
+                if partial_path.exists() and supports_resume:
+                    partial_size = partial_path.stat().st_size
+                    if partial_size > RESUME_SAFETY_MARGIN:
+                        start_pos = partial_size - RESUME_SAFETY_MARGIN
+                        logger.info(f"Resuming download of {format_filename_for_log(file_path.name)} from position {start_pos:,} bytes")
+                    else:
+                        logger.info(f"Partial file too small to resume, starting fresh download of {format_filename_for_log(file_path.name)}")
+                        partial_path.unlink()
+                elif partial_path.exists():
+                    logger.info(f"Server doesn't support resume, starting fresh download of {format_filename_for_log(file_path.name)}")
+                    partial_path.unlink()
+                elif file_path.exists():
+                    logger.info(f"Incomplete file found, restarting download of {format_filename_for_log(file_path.name)}")
+
+                # Prepare headers for resume if needed
+                headers = {"Accept-Ranges": "bytes"}
+                if start_pos > 0:
+                    headers["Range"] = f"bytes={start_pos}-"
+
+                async with session.get(url, headers=headers) as response:
                     if response.status >= 400:
                         logger.error(f"Download failed [{response.status}]: {url}")
                         return False
 
-                    file_size = int(response.headers.get("Content-Length") or 0)
-                    
-                    # Check if complete file exists with correct size
-                    if file_path.exists() and file_path.stat().st_size == file_size:
-                        logger.info(f"File already exists and is complete: {file_path.name}")
-                        # Clean up any partial file if it exists
-                        if partial_path.exists():
-                            partial_path.unlink()
-                        return True
-                    
-                    # If we have a partial file, log it and continue with download
-                    if partial_path.exists():
-                        logger.info(f"Resuming download of {file_path.name}")
-                        partial_path.unlink()  # Start fresh to avoid corruption
-                    elif file_path.exists():
-                        logger.info(f"Incomplete file found, restarting download of {file_path.name}")
-
                     try:
                         # Check available disk space
                         import shutil
+                        needed_space = file_size if start_pos == 0 else (file_size - start_pos)
                         free_space = shutil.disk_usage(partial_path.parent).free
-                        if file_size > free_space:
+                        if needed_space > free_space:
                             logger.error(
-                                f"Insufficient disk space for {file_path.name}. "
-                                f"Required: {file_size / (1024*1024):.2f}MB, "
+                                f"Insufficient disk space for {format_filename_for_log(file_path.name)}. "
+                                f"Required: {needed_space / (1024*1024):.2f}MB, "
                                 f"Available: {free_space / (1024*1024):.2f}MB"
                             )
                             logger.error(f"Download URL for manual attempt: {url}")
                             return False
 
-                        with open(partial_path, "wb") as out_file:
-                            file_size_in_mb = file_size / (1024 * 1024)
-                            # Log initial filesize
-                            logger.info(f"Downloading {file_path.name} ({file_size_in_mb:.2f} MB)")
-                            
-                            # Use larger chunk size for better performance
+                        # Open file in append mode if resuming, write mode if starting fresh
+                        mode = "ab" if start_pos > 0 else "wb"
+                        with open(partial_path, mode) as out_file:
                             chunk_size = 16 * 1024 * 1024  # 16MB chunks
-                            downloaded = 0
+                            downloaded = start_pos
+                            
+                            if start_pos == 0:
+                                logger.info(f"Downloading {format_filename_for_log(file_path.name)} ({file_size / (1024*1024):.2f} MB)")
+                            else:
+                                logger.info(f"Resuming {format_filename_for_log(file_path.name)} from {start_pos / (1024*1024):.2f}MB")
+                            
                             async for chunk in response.content.iter_chunked(chunk_size):
                                 if not chunk:
                                     break
@@ -542,11 +581,11 @@ async def download_file(
                                     progress = (downloaded / file_size) * 100
                                     if downloaded % (50 * 1024 * 1024) == 0:  # Log every 50MB
                                         logger.debug(f"{progress:.1f}%")
-                    
+
                         # Verify file size after download
                         if partial_path.stat().st_size != file_size:
                             logger.error(
-                                f"File size mismatch for {file_path.name}. "
+                                f"File size mismatch for {format_filename_for_log(file_path.name)}. "
                                 f"Expected: {file_size}, Got: {partial_path.stat().st_size}"
                             )
                             logger.error(f"Download URL for manual attempt: {url}")
@@ -554,12 +593,12 @@ async def download_file(
 
                         # Rename partial file to final filename on success
                         partial_path.rename(file_path)
-                        logger.info(f"Completed: {file_path.name}")
+                        logger.info(f"Completed: {format_filename_for_log(file_path.name)}")
                         return True
 
                     except OSError as e:
                         logger.error(
-                            f"OS Error while writing file {file_path.name}: {e}\n"
+                            f"OS Error while writing file {format_filename_for_log(file_path.name)}: {e}\n"
                             f"Error type: {type(e).__name__}\n"
                             f"Error details: {str(e)}\n"
                             f"Download URL for manual attempt: {url}"
@@ -567,7 +606,7 @@ async def download_file(
                         return False
                     except Exception as e:
                         logger.error(
-                            f"Error while writing file {file_path.name}: {e}\n"
+                            f"Error while writing file {format_filename_for_log(file_path.name)}: {e}\n"
                             f"Error type: {type(e).__name__}\n"
                             f"Error details: {str(e)}\n"
                             f"Traceback:\n{traceback.format_exc()}\n"
@@ -577,13 +616,13 @@ async def download_file(
 
         except asyncio.TimeoutError as e:
             logger.error(
-                f"Timeout downloading {file_path.name}: {e}\n"
+                f"Timeout downloading {format_filename_for_log(file_path.name)}: {e}\n"
                 f"Download URL for manual attempt: {url}"
             )
             return False
         except aiohttp.ClientError as e:
             logger.error(
-                f"Network error downloading {file_path.name}: {e}\n"
+                f"Network error downloading {format_filename_for_log(file_path.name)}: {e}\n"
                 f"Error type: {type(e).__name__}\n"
                 f"Error details: {str(e)}\n"
                 f"Download URL for manual attempt: {url}"
@@ -591,7 +630,7 @@ async def download_file(
             return False
         except Exception as e:
             logger.error(
-                f"Unexpected error downloading {file_path.name}: {e}\n"
+                f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}\n"
                 f"Error type: {type(e).__name__}\n"
                 f"Error details: {str(e)}\n"
                 f"Traceback:\n{traceback.format_exc()}\n"
@@ -675,9 +714,18 @@ async def process_course(
                 file_path = course_dir / filename
 
                 await rename_if_needed(course_dir, filename, str(attachment["id"]))
-                existing_file = find_file_by_partial_name(course_dir, f"_{attachment['id']}_")
-                if existing_file:
-                    logger.info(f"Skipping download: File for attachment {attachment['id']} already exists.")
+                
+                # Check for existing complete file (excluding .partial files)
+                existing_complete_file = None
+                for file in course_dir.iterdir():
+                    if (file.is_file() and 
+                        f"_{attachment['id']}_" in file.name and 
+                        not file.name.endswith('.partial')):
+                        existing_complete_file = file
+                        break
+
+                if existing_complete_file:
+                    logger.info(f"Skipping download: Complete file for attachment {attachment['id']} already exists: {format_filename_for_log(existing_complete_file.name)}")
                     continue
 
                 # Queue async download
