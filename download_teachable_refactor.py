@@ -242,6 +242,34 @@ def format_filename_for_log(filename: str, max_length: int = 25, spacer: str = '
         
     return f"{name[:available_length]}{spacer}{ext}"
 
+def format_admin_urls(course_info: Optional[Dict[str, Any]], attachment_id: Optional[int] = None) -> str:
+    """
+    Formats admin URLs for troubleshooting download issues.
+    
+    Creates two URLs:
+    1. Frontend admin URL to view the lecture (requires course_id and lecture_id)
+    2. API endpoint URL for manual download attempt (requires attachment_id)
+    
+    Note: These URLs only work for logged-in admin users in the Teachable backend.
+    """
+    if not course_info:
+        return ""
+
+    frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN", "your-teachable-domain.com")
+    if not frontend_domain or not course_info.get('course_id') or not course_info.get('lecture_id'):
+        return ""
+
+    admin_urls = "\nAdmin URLs (requires backend login):"
+    
+    # Frontend URL to view the lecture
+    admin_urls += f"\n  View lecture: https://{frontend_domain}/admin-app/courses/{course_info['course_id']}/curriculum/lessons/{course_info['lecture_id']}"
+    
+    # API endpoint for manual download (if attachment_id is provided)
+    if attachment_id:
+        admin_urls += f"\n  Manual download: https://{frontend_domain}/api/v1/attachments/{attachment_id}/hotmart_video_download_link"
+    
+    return admin_urls
+
 # --- API Client ---
 class TeachableAPIClient:
     """
@@ -495,7 +523,7 @@ async def rename_if_needed(directory: pathlib.Path, new_filename: str, attachmen
 
 async def download_file(
     url: str, file_path: pathlib.Path, semaphore: asyncio.Semaphore,
-    course_info: Optional[Dict[str, Any]] = None  # Add course info parameter
+    course_info: Optional[Dict[str, Any]] = None
 ) -> bool:
     """
     Asynchronously downloads a file using aiohttp with a bounded semaphore for concurrency.
@@ -584,10 +612,20 @@ async def download_file(
 
                 async with session.get(url, headers=headers) as response:
                     if response.status >= 400:
+                        error_text = await response.text()
+                        attachment_id = course_info.get('attachment_id') if course_info else None
+                        admin_urls = format_admin_urls(course_info, attachment_id)
+                        
                         logger.error(
                             f"Download failed [{response.status}]: {url}"
+                            f"\nError response: {error_text}"
                             f"{format_error_context()}"
+                            f"{admin_urls}"
                         )
+                        # Write error message to file for visibility
+                        if response.status == 403:
+                            error_msg = f"Cannot fetch file: {response.status} {response.reason}"
+                            file_path.write_text(error_msg)
                         return False
 
                     try:
@@ -639,47 +677,60 @@ async def download_file(
                                 partial_path.rename(file_path)
                                 return True
                             else:
+                                attachment_id = course_info.get('attachment_id') if course_info else None
+                                admin_urls = format_admin_urls(course_info, attachment_id)
+                                
                                 logger.error(
                                     f"File size mismatch for {format_filename_for_log(file_path.name)}. "
                                     f"Expected: {file_size}, Got: {actual_size}"
                                     f"{format_error_context()}"
+                                    f"{admin_urls}"
                                 )
                                 logger.error(f"Download URL for manual attempt: {url}")
                                 return False
 
                         # Rename partial file to final filename on success
                         partial_path.rename(file_path)
-                        logger.info(f"Completed: {format_filename_for_log(file_path.name)}")
+                        logger.info(
+                            f"Completed: {format_filename_for_log(file_path.name)} - "
+                            f"{course_info.get('course_name', 'Unknown')} - "
+                            f"Module: {course_info.get('module_name', 'Unknown')}"
+                        )
                         return True
 
                     except OSError as e:
                         logger.error(
-                            f"OS Error while writing file {format_filename_for_log(file_path.name)}: {e}\n"
+                            f"OS Error while writing file {format_filename_for_log(file_path.name)}: {e}"
+                            f"{format_error_context()}\n"
                             f"Error type: {type(e).__name__}\n"
                             f"Error details: {str(e)}\n"
                             f"Download URL for manual attempt: {url}"
                         )
                         return False
 
-        except asyncio.TimeoutError as e:
-            logger.error(
-                f"Timeout downloading {format_filename_for_log(file_path.name)}: {e}"
-                f"{format_error_context()}\n"
-                f"Download URL for manual attempt: {url}"
-            )
-            return False
-        except aiohttp.ClientError as e:
-            logger.error(
-                f"Network error downloading {format_filename_for_log(file_path.name)}: {e}"
-                f"{format_error_context()}\n"
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            attachment_id = course_info.get('attachment_id') if course_info else None
+            admin_urls = format_admin_urls(course_info, attachment_id)
+            
+            error_msg = (
+                f"{'Timeout' if isinstance(e, asyncio.TimeoutError) else 'Network error'} "
+                f"downloading {format_filename_for_log(file_path.name)}: {e}"
+                f"{format_error_context()}"
+                f"{admin_urls}\n"
                 f"Error type: {type(e).__name__}\n"
                 f"Error details: {str(e)}\n"
                 f"Download URL for manual attempt: {url}"
             )
+            logger.error(error_msg)
             return False
         except Exception as e:
+            attachment_id = course_info.get('attachment_id') if course_info else None
+            admin_urls = format_admin_urls(course_info, attachment_id)
+            
             logger.error(
-                f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}\n"
+                f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}"
+                f"{format_error_context()}"
+                f"{admin_urls}\n"
                 f"Error type: {type(e).__name__}\n"
                 f"Error details: {str(e)}\n"
                 f"Traceback:\n{traceback.format_exc()}\n"
@@ -722,7 +773,14 @@ class DownloadManager:
         self.active_downloads: Dict[int, asyncio.Task] = {}
         self._stop = False
         self._consumers: List[asyncio.Task] = []
-        self._started = False  # New flag to track if consumers are running
+        self._started = False
+
+    def get_status(self) -> str:
+        """Returns current download manager status"""
+        return (
+            f"Active downloads: {len(self.active_downloads)}, "
+            f"Queue size: {self.queue.qsize()}"
+        )
 
     def stop(self) -> None:
         """Signal the download manager to stop processing new downloads"""
@@ -779,17 +837,18 @@ class DownloadManager:
                 try:
                     await download_task
                 except asyncio.CancelledError:
-                    logger.info(f"Download cancelled for {task.attachment_name}")
+                    logger.info(f"Download cancelled for {task.attachment_name} - {self.get_status()}")
                 except Exception as e:
-                    logger.error(f"Error downloading {task.attachment_name}: {e}")
+                    logger.error(f"Error downloading {task.attachment_name}: {e} - {self.get_status()}")
                 finally:
                     self.active_downloads.pop(task.attachment_id, None)
                     self.queue.task_done()
+                    logger.debug(f"Task completed - {self.get_status()}")
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in consumer {worker_id}: {e}")
+                logger.error(f"Error in consumer {worker_id}: {e} - {self.get_status()}")
 
     async def _is_file_complete(self, task: DownloadTask) -> bool:
         """Check if the file already exists and is complete"""
