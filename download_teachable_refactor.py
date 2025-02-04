@@ -618,8 +618,8 @@ async def download_file(
                         
                         logger.error(
                             f"Download failed [{response.status}]: {url}"
-                            f"\nError response: {error_text}"
-                            f"{format_error_context()}"
+                            # f"\nError response: {error_text}"
+                            # f"{format_error_context()}"
                             f"{admin_urls}"
                         )
                         # Write error message to file for visibility
@@ -683,7 +683,7 @@ async def download_file(
                                 logger.error(
                                     f"File size mismatch for {format_filename_for_log(file_path.name)}. "
                                     f"Expected: {file_size}, Got: {actual_size}"
-                                    f"{format_error_context()}"
+                                    # f"{format_error_context()}"
                                     f"{admin_urls}"
                                 )
                                 logger.error(f"Download URL for manual attempt: {url}")
