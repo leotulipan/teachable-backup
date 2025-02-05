@@ -1162,3 +1162,65 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Shutting down gracefully...")
+
+async def handle_gateway_timeout(response: aiohttp.ClientResponse, retry_count: int = 3) -> None:
+    """
+    Handle 504 Gateway Timeout errors by implementing a waiting period.
+    
+    Args:
+        response: The response object from the failed request
+        retry_count: Number of retries before giving up (default: 3)
+    """
+    if response.status == 504:
+        wait_time = 300  # 5 minutes in seconds
+        logger.warning(f"Received 504 Gateway Timeout. Waiting {wait_time} seconds before retry. Attempts remaining: {retry_count}")
+        await asyncio.sleep(wait_time)
+        return True
+    return False
+
+async def get(url: str, headers: dict = None, retry_count: int = 3) -> dict:
+    """
+    Make a GET request to the API with retry logic for various error conditions.
+    
+    Args:
+        url: The URL to make the request to
+        headers: Request headers
+        retry_count: Number of retries before giving up
+    
+    Returns:
+        dict: The JSON response from the API
+    """
+    async with aiohttp.ClientSession() as session:
+        while retry_count > 0:
+            try:
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    
+                    # Handle rate limiting
+                    if response.status == 429:
+                        await handle_rate_limit(response)
+                        retry_count -= 1
+                        continue
+                        
+                    # Handle gateway timeout
+                    if response.status == 504:
+                        should_retry = await handle_gateway_timeout(response, retry_count)
+                        if should_retry:
+                            retry_count -= 1
+                            continue
+                    
+                    # Log other errors
+                    error_text = await response.text()
+                    logger.error(f"Error response for URL {url}: {response.status} - {error_text}")
+                    raise ApiError(f"API request failed with status {response.status}")
+                    
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if retry_count <= 1:
+                    logger.error(f"Failed to fetch {url} after all retries: {str(e)}")
+                    raise
+                logger.warning(f"Request failed, retrying... ({retry_count-1} attempts remaining): {str(e)}")
+                retry_count -= 1
+                await asyncio.sleep(5)  # Short delay before retry
+                
+    raise ApiError("Maximum retries exceeded")
