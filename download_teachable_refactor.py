@@ -810,12 +810,12 @@ class DownloadManager:
         self._stop = False
         self._consumers: List[asyncio.Task] = []
         self._started = False
-        self.failed_downloads: Set[int] = set()  # Track failed download IDs
-        self._active_count = 0  # Add explicit counter for active downloads
+        self.failed_downloads: Set[int] = set()  # Track actual failed downloads
+        self.completed_downloads: Set[int] = set()  # Track successful downloads
+        self._active_count = 0
 
     def get_status(self) -> str:
         """Returns current download manager status"""
-        # Clean up completed tasks from active_downloads
         self.active_downloads = {
             id_: task for id_, task in self.active_downloads.items() 
             if not task.done()
@@ -825,7 +825,10 @@ class DownloadManager:
             f"Queue size: {self.queue.qsize()}"
         )
         
-        # Only include failed downloads in status if there are any
+        if self.completed_downloads:
+            status += f", Completed: {len(self.completed_downloads)}"
+        
+        # Only include failed downloads if there are actual failures
         if self.failed_downloads:
             status += f", Failed downloads: {len(self.failed_downloads)}"
             logger.error(f"Download failures detected: {status}")
@@ -870,18 +873,13 @@ class DownloadManager:
             task = None
             try:
                 task = await self.queue.get()
-                if task is None:  # Sentinel value for shutdown
+                if task is None:
                     self.queue.task_done()
                     break
 
                 # Skip if this task previously failed
                 if task.attachment_id in self.failed_downloads:
                     logger.debug(f"Skipping previously failed download: {task.attachment_name}")
-                    self.queue.task_done()
-                    continue
-
-                # Check if file already exists and is complete
-                if await self._is_file_complete(task):
                     self.queue.task_done()
                     continue
 
@@ -893,27 +891,32 @@ class DownloadManager:
                 
                 try:
                     success = await download_task
-                    if not success:
-                        # Mark this download as failed to prevent retries
+                    if success:
+                        # Mark as completed if successful
+                        self.completed_downloads.add(task.attachment_id)
+                        logger.debug(f"Download completed successfully: {task.attachment_name} - {self.get_status()}")
+                    else:
+                        # Only mark as failed if actually failed
                         self.failed_downloads.add(task.attachment_id)
-                        logger.debug(f"Download failed and marked as failed: {task.attachment_name} - {self.get_status()}")
+                        logger.debug(f"Download failed: {task.attachment_name} - {self.get_status()}")
                 except asyncio.CancelledError:
                     logger.info(f"Download cancelled for {task.attachment_name} - {self.get_status()}")
-                    self.failed_downloads.add(task.attachment_id)  # Mark cancelled downloads as failed
+                    self.failed_downloads.add(task.attachment_id)
                 except Exception as e:
                     logger.error(f"Error downloading {task.attachment_name}: {e} - {self.get_status()}")
                     self.failed_downloads.add(task.attachment_id)
                 finally:
-                    # Clean up the active download
                     if task.attachment_id in self.active_downloads:
                         self.active_downloads.pop(task.attachment_id)
                     self.queue.task_done()
-                    status = self.get_status()  # Get fresh status after cleanup
+                    status = self.get_status()
                     logger.debug(f"Task completed - {status}")
 
-                    # If queue is empty and no active downloads, log final status
                     if self.queue.empty() and not self.active_downloads:
-                        logger.info(f"All downloads completed - {status}")
+                        if self.failed_downloads:
+                            logger.error(f"All downloads completed with some failures - {status}")
+                        else:
+                            logger.info(f"All downloads completed successfully - {status}")
 
             except asyncio.CancelledError:
                 if task:
@@ -924,27 +927,10 @@ class DownloadManager:
                     self.queue.task_done()
                 logger.error(f"Error in consumer {worker_id}: {e} - {self.get_status()}")
 
-    async def _is_file_complete(self, task: DownloadTask) -> bool:
-        """Check if the file already exists and is complete"""
-        if not task.file_path.exists():
-            return False
-            
-        if task.file_size is None:
-            # Fetch file size from server if not provided
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.head(task.url) as response:
-                        task.file_size = int(response.headers.get("Content-Length", 0))
-            except Exception as e:
-                logger.error(f"Error fetching file size for {task.attachment_name}: {e}")
-                return False
-
-        return task.file_path.stat().st_size == task.file_size
-
-    async def _process_download(self, task: DownloadTask) -> None:
+    async def _process_download(self, task: DownloadTask) -> bool:
         """Process a single download task"""
         async with self.semaphore:
-            await download_file(
+            return await download_file(
                 task.url, 
                 task.file_path, 
                 self.semaphore,
@@ -958,11 +944,11 @@ class DownloadManager:
             return
             
         try:
-            await asyncio.wait_for(self.queue.join(), timeout=30)  # Add timeout
+            await asyncio.wait_for(self.queue.join(), timeout=30)
         except asyncio.TimeoutError:
             logger.error(f"Timeout waiting for downloads to complete - {self.get_status()}")
-            self._stop = True  # Signal consumers to stop
-            
+            self._stop = True
+
         # Clean up any remaining active downloads
         active_tasks = [task for task in self.active_downloads.values() if not task.done()]
         if active_tasks:
@@ -982,8 +968,10 @@ class DownloadManager:
         self.active_downloads.clear()
         if self.failed_downloads:
             logger.error(f"Download manager shutdown complete with failures - {self.get_status()}")
+        elif self.completed_downloads:
+            logger.info(f"Download manager shutdown complete successfully - {self.get_status()}")
         else:
-            logger.info(f"Download manager shutdown complete - {self.get_status()}")
+            logger.info("Download manager shutdown complete - no downloads processed")
 
 async def process_course(
     api_client: TeachableAPIClient,
