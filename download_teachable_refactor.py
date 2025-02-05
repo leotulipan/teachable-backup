@@ -303,7 +303,10 @@ class TeachableAPIClient:
                 raise asyncio.CancelledError("API client stopped.")
             
             async with self.api_calls_semaphore:  # <--- concurrency-limited
-                logger.debug(f"Requesting URL: {url} (Retry {retries})")
+                # Only log retries, not initial requests
+                if retries > 0:
+                    logger.debug(f"Retrying URL: {url} (Retry {retries})")
+                
                 try:
                     response = await session.get(url, headers=self.headers)
                     
@@ -537,7 +540,7 @@ async def download_file(
         course_info: Optional dict containing course/lecture context for better error messages
     """
     if not url:
-        logger.warning("Skipping download: Missing URL.")
+        logger.error("Skipping download: Missing URL.")
         return False
 
     # Create partial download path
@@ -616,12 +619,12 @@ async def download_file(
                         attachment_id = course_info.get('attachment_id') if course_info else None
                         admin_urls = format_admin_urls(course_info, attachment_id)
                         
-                        logger.error(
-                            f"Download failed [{response.status}]: {url}"
-                            # f"\nError response: {error_text}"
-                            # f"{format_error_context()}"
+                        error_msg = (
+                            f"Download failed [{response.status}]: {url}\n"
                             f"{admin_urls}"
                         )
+                        logger.error(error_msg)
+                        
                         # Write error message to file for visibility
                         if response.status == 403:
                             error_msg = f"Cannot fetch file: {response.status} {response.reason}"
@@ -714,11 +717,8 @@ async def download_file(
             
             error_msg = (
                 f"{'Timeout' if isinstance(e, asyncio.TimeoutError) else 'Network error'} "
-                f"downloading {format_filename_for_log(file_path.name)}: {e}"
-                f"{format_error_context()}"
+                f"downloading {format_filename_for_log(file_path.name)}: {e}\n"
                 f"{admin_urls}\n"
-                f"Error type: {type(e).__name__}\n"
-                f"Error details: {str(e)}\n"
                 f"Download URL for manual attempt: {url}"
             )
             logger.error(error_msg)
@@ -727,15 +727,12 @@ async def download_file(
             attachment_id = course_info.get('attachment_id') if course_info else None
             admin_urls = format_admin_urls(course_info, attachment_id)
             
-            logger.error(
-                f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}"
-                f"{format_error_context()}"
+            error_msg = (
+                f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}\n"
                 f"{admin_urls}\n"
-                f"Error type: {type(e).__name__}\n"
-                f"Error details: {str(e)}\n"
-                f"Traceback:\n{traceback.format_exc()}\n"
                 f"Download URL for manual attempt: {url}"
             )
+            logger.error(error_msg)
             return False
 
 @dataclass
@@ -784,11 +781,16 @@ class DownloadManager:
             id_: task for id_, task in self.active_downloads.items() 
             if not task.done()
         }
-        return (
+        status = (
             f"Active downloads: {len(self.active_downloads)}, "
-            f"Queue size: {self.queue.qsize()}, "
-            f"Failed downloads: {len(self.failed_downloads)}"
+            f"Queue size: {self.queue.qsize()}"
         )
+        
+        # Only include failed downloads in status if there are any
+        if self.failed_downloads:
+            status += f", Failed downloads: {len(self.failed_downloads)}"
+            logger.error(f"Download failures detected: {status}")
+        return status
 
     def stop(self) -> None:
         """Signal the download manager to stop processing new downloads"""
@@ -919,13 +921,13 @@ class DownloadManager:
         try:
             await asyncio.wait_for(self.queue.join(), timeout=30)  # Add timeout
         except asyncio.TimeoutError:
-            logger.warning(f"Timeout waiting for downloads to complete - {self.get_status()}")
+            logger.error(f"Timeout waiting for downloads to complete - {self.get_status()}")
             self._stop = True  # Signal consumers to stop
             
         # Clean up any remaining active downloads
         active_tasks = [task for task in self.active_downloads.values() if not task.done()]
         if active_tasks:
-            logger.warning(f"Cancelling {len(active_tasks)} remaining downloads")
+            logger.error(f"Cancelling {len(active_tasks)} remaining downloads")
             for task in active_tasks:
                 task.cancel()
             
@@ -935,11 +937,14 @@ class DownloadManager:
                     timeout=10
                 )
             except asyncio.TimeoutError:
-                logger.warning("Timeout waiting for active downloads to cancel")
+                logger.error("Timeout waiting for active downloads to cancel")
 
         # Final cleanup
         self.active_downloads.clear()
-        logger.info(f"Download manager shutdown complete - {self.get_status()}")
+        if self.failed_downloads:
+            logger.error(f"Download manager shutdown complete with failures - {self.get_status()}")
+        else:
+            logger.info(f"Download manager shutdown complete - {self.get_status()}")
 
 async def process_course(
     api_client: TeachableAPIClient,
