@@ -242,13 +242,18 @@ def format_filename_for_log(filename: str, max_length: int = 25, spacer: str = '
         
     return f"{name[:available_length]}{spacer}{ext}"
 
-def format_admin_urls(course_info: Optional[Dict[str, Any]], attachment_id: Optional[int] = None) -> str:
+def format_admin_urls(course_info: Optional[Dict[str, Any]], 
+                     attachment_id: Optional[int] = None, 
+                     attachment_kind: Optional[str] = None,
+                     url: Optional[str] = None) -> str:
     """
     Formats admin URLs for troubleshooting download issues.
     
-    Creates two URLs:
-    1. Frontend admin URL to view the lecture (requires course_id and lecture_id)
-    2. API endpoint URL for manual download attempt (requires attachment_id)
+    Args:
+        course_info: Dictionary containing course context
+        attachment_id: ID of the attachment
+        attachment_kind: Type of attachment ('video', 'pdf', etc.)
+        url: Direct download URL
     
     Note: These URLs only work for logged-in admin users in the Teachable backend.
     """
@@ -259,16 +264,26 @@ def format_admin_urls(course_info: Optional[Dict[str, Any]], attachment_id: Opti
     if not frontend_domain or not course_info.get('course_id') or not course_info.get('lecture_id'):
         return ""
 
-    admin_urls = "\nAdmin URLs (requires backend login):"
+    # Instead of including newlines in the message, format each line as a separate log entry
+    admin_urls = []
     
     # Frontend URL to view the lecture
-    admin_urls += f"\n  View lecture: https://{frontend_domain}/admin-app/courses/{course_info['course_id']}/curriculum/lessons/{course_info['lecture_id']}"
+    admin_urls.append(
+        f"View lecture: https://{frontend_domain}/admin-app/courses/{course_info['course_id']}/curriculum/lessons/{course_info['lecture_id']}"
+    )
     
-    # API endpoint for manual download (if attachment_id is provided)
-    if attachment_id:
-        admin_urls += f"\n  Manual download: https://{frontend_domain}/api/v1/attachments/{attachment_id}/hotmart_video_download_link"
+    # API endpoint for manual download (only for videos)
+    if attachment_id and attachment_kind == 'video':
+        admin_urls.append(
+            f"Manual video download: https://{frontend_domain}/api/v1/attachments/{attachment_id}/hotmart_video_download_link"
+        )
     
-    return admin_urls
+    # Add direct download URL if provided
+    if url:
+        admin_urls.append(f"Direct download attempt: {url}")
+    
+    # Return URLs formatted for separate logging
+    return "\n".join(admin_urls)
 
 # --- API Client ---
 class TeachableAPIClient:
@@ -569,19 +584,13 @@ async def download_file(
                     supports_resume = "Accept-Ranges" in head_response.headers
                     file_size = int(head_response.headers.get("Content-Length", 0))
                     
+                    logger.debug(f"HEAD request for {format_filename_for_log(file_path.name)}: "
+                               f"size={file_size}, supports_resume={supports_resume}")
+
                     # If file exists and is larger than expected for small files, consider it complete
                     if file_path.exists():
                         actual_size = file_path.stat().st_size
-                        if actual_size >= file_size and file_size <= SMALL_FILE_THRESHOLD:
-                            logger.warning(
-                                f"File size larger than expected for {format_filename_for_log(file_path.name)}. "
-                                f"Expected: {file_size}, Got: {actual_size}. "
-                                f"File is under {SMALL_FILE_THRESHOLD/(1024*1024)}MB - keeping existing file."
-                            )
-                            if partial_path.exists():
-                                partial_path.unlink()
-                            return True
-                        elif actual_size == file_size:
+                        if actual_size == file_size:
                             logger.info(f"File already exists and is complete: {format_filename_for_log(file_path.name)}")
                             if partial_path.exists():
                                 partial_path.unlink()
@@ -591,7 +600,16 @@ async def download_file(
                 start_pos = 0
                 if partial_path.exists() and supports_resume:
                     partial_size = partial_path.stat().st_size
-                    if partial_size > RESUME_SAFETY_MARGIN:
+                    if partial_size == file_size:
+                        # If partial file is complete, just rename it
+                        logger.info(f"Partial file is complete ({partial_size:,} bytes), renaming to final filename")
+                        try:
+                            partial_path.rename(file_path)
+                            return True
+                        except OSError as e:
+                            logger.error(f"Error renaming complete partial file: {e}")
+                            return False
+                    elif partial_size > RESUME_SAFETY_MARGIN:
                         # Calculate the actual start position, accounting for the safety margin
                         start_pos = max(0, partial_size - RESUME_SAFETY_MARGIN)
                         logger.info(f"Resuming {format_filename_for_log(file_path.name)} from {start_pos / (1024*1024):.2f}MB")
@@ -600,10 +618,17 @@ async def download_file(
                         with open(partial_path, "ab") as f:
                             f.truncate(start_pos)
                     else:
-                        logger.info(f"Partial file too small to resume, starting fresh download of {format_filename_for_log(file_path.name)}")
+                        logger.info(
+                            f"Partial file smaller than safety margin ({partial_size:,} bytes), "
+                            f"starting fresh download of {format_filename_for_log(file_path.name)}"
+                        )
                         partial_path.unlink()
                 elif partial_path.exists():
-                    logger.info(f"Server doesn't support resume, starting fresh download of {format_filename_for_log(file_path.name)}")
+                    partial_size = partial_path.stat().st_size
+                    logger.info(
+                        f"Server doesn't support resume ({partial_size:,} bytes in partial file), "
+                        f"starting fresh download of {format_filename_for_log(file_path.name)}"
+                    )
                     partial_path.unlink()
                 elif file_path.exists():
                     logger.info(f"Incomplete file found, restarting download of {format_filename_for_log(file_path.name)}")
@@ -617,13 +642,13 @@ async def download_file(
                     if response.status >= 400:
                         error_text = await response.text()
                         attachment_id = course_info.get('attachment_id') if course_info else None
-                        admin_urls = format_admin_urls(course_info, attachment_id)
+                        attachment_kind = course_info.get('attachment_kind')
+                        admin_urls = format_admin_urls(course_info, attachment_id, attachment_kind, url)
                         
-                        error_msg = (
-                            f"Download failed [{response.status}]: {url}\n"
-                            f"{admin_urls}"
-                        )
-                        logger.error(error_msg)
+                        # Log each line separately to maintain loguru formatting
+                        logger.error(f"Download failed [{response.status}]: {format_filename_for_log(file_path.name)}")
+                        for url_line in admin_urls.split('\n'):
+                            logger.error(url_line)
                         
                         # Write error message to file for visibility
                         if response.status == 403:
@@ -668,28 +693,42 @@ async def download_file(
                                     logger.info(f"Download interrupted for {format_filename_for_log(file_path.name)}")
                                     return False
 
-                        # Modified size verification
+                        # Ensure all data is written to disk before closing
+                        out_file.flush()
+                        os.fsync(out_file.fileno())
+
+                        # File is now closed, add a small delay to ensure file operations are complete
+                        await asyncio.sleep(0.1)
+
+                        # Modified size verification with better logging
                         actual_size = partial_path.stat().st_size
                         if actual_size != file_size:
-                            if actual_size > file_size and file_size <= SMALL_FILE_THRESHOLD:
-                                logger.warning(
-                                    f"File size larger than expected for {format_filename_for_log(file_path.name)}. "
-                                    f"Expected: {file_size}, Got: {actual_size}. "
-                                    f"File is under {SMALL_FILE_THRESHOLD/(1024*1024)}MB - keeping downloaded file."
-                                )
-                                partial_path.rename(file_path)
-                                return True
-                            else:
+                            logger.debug(f"Size verification for {format_filename_for_log(file_path.name)}:")
+                            logger.debug(f"  Expected (from HEAD): {file_size:,} bytes")
+                            logger.debug(f"  Downloaded: {downloaded:,} bytes")
+                            logger.debug(f"  Actual on disk: {actual_size:,} bytes")
+                            
+                            # Add a retry with delay if sizes don't match
+                            for retry in range(3):
+                                await asyncio.sleep(0.5 * (retry + 1))  # Increasing delays: 0.5s, 1s, 1.5s
+                                actual_size = partial_path.stat().st_size
+                                if actual_size == file_size:
+                                    logger.info(f"File size correct after retry {retry + 1}")
+                                    break
+                                logger.debug(f"  Retry {retry + 1}: Actual on disk: {actual_size:,} bytes")
+
+                            if actual_size != file_size:
                                 attachment_id = course_info.get('attachment_id') if course_info else None
-                                admin_urls = format_admin_urls(course_info, attachment_id)
+                                attachment_kind = course_info.get('attachment_kind')
+                                admin_urls = format_admin_urls(course_info, attachment_id, attachment_kind, url)
                                 
                                 logger.error(
                                     f"File size mismatch for {format_filename_for_log(file_path.name)}. "
-                                    f"Expected: {file_size}, Got: {actual_size}"
-                                    # f"{format_error_context()}"
+                                    f"Expected: {file_size}, Got: {actual_size} "
                                     f"{admin_urls}"
                                 )
-                                logger.error(f"Download URL for manual attempt: {url}")
+                                for url_line in admin_urls.split('\n'):
+                                    logger.error(url_line)
                                 return False
 
                         # Rename partial file to final filename on success
@@ -713,26 +752,24 @@ async def download_file(
 
         except (asyncio.TimeoutError, aiohttp.ClientError) as e:
             attachment_id = course_info.get('attachment_id') if course_info else None
-            admin_urls = format_admin_urls(course_info, attachment_id)
+            attachment_kind = course_info.get('attachment_kind')
+            admin_urls = format_admin_urls(course_info, attachment_id, attachment_kind, url)
             
-            error_msg = (
-                f"{'Timeout' if isinstance(e, asyncio.TimeoutError) else 'Network error'} "
-                f"downloading {format_filename_for_log(file_path.name)}: {e}\n"
-                f"{admin_urls}\n"
-                f"Download URL for manual attempt: {url}"
-            )
-            logger.error(error_msg)
+            # Log each line separately
+            logger.error(f"{'Timeout' if isinstance(e, asyncio.TimeoutError) else 'Network error'} "
+                        f"downloading {format_filename_for_log(file_path.name)}: {e}")
+            for url_line in admin_urls.split('\n'):
+                logger.error(url_line)
             return False
         except Exception as e:
             attachment_id = course_info.get('attachment_id') if course_info else None
-            admin_urls = format_admin_urls(course_info, attachment_id)
+            attachment_kind = course_info.get('attachment_kind')
+            admin_urls = format_admin_urls(course_info, attachment_id, attachment_kind, url)
             
-            error_msg = (
-                f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}\n"
-                f"{admin_urls}\n"
-                f"Download URL for manual attempt: {url}"
-            )
-            logger.error(error_msg)
+            # Log each line separately
+            logger.error(f"Unexpected error downloading {format_filename_for_log(file_path.name)}: {e}")
+            for url_line in admin_urls.split('\n'):
+                logger.error(url_line)
             return False
 
 @dataclass
@@ -744,6 +781,7 @@ class DownloadTask:
     lecture_id: int
     attachment_id: int
     attachment_name: str
+    attachment_kind: str  # Add attachment type
     file_size: Optional[int] = None
     course_name: Optional[str] = None
     module_id: Optional[int] = None
@@ -759,7 +797,8 @@ class DownloadTask:
             'module_name': self.module_name,
             'lecture_id': self.lecture_id,
             'lecture_name': self.lecture_name,
-            'attachment_id': self.attachment_id
+            'attachment_id': self.attachment_id,
+            'attachment_kind': self.attachment_kind  # Include attachment type in context
         }
 
 class DownloadManager:
@@ -1004,7 +1043,13 @@ async def process_course(
                 course_id=course_id,
                 lecture_id=lecture["id"],
                 attachment_id=attachment["id"],
-                attachment_name=attachment.get("name", "")
+                attachment_name=attachment.get("name", ""),
+                attachment_kind=attachment.get("kind", ""),  # Include attachment type
+                file_size=attachment.get("media_duration"),
+                course_name=course_name,
+                module_id=lecture["section_id"],
+                module_name=lecture["name"],
+                lecture_name=lecture["name"]
             )
             task = asyncio.create_task(download_manager.add_task(download_task))
             download_tasks.add(task)

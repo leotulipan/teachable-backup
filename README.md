@@ -3,6 +3,28 @@
 **Teachable Backup Script**
 
 ## To-Dos
+[ ] check recent errors in C:\Users\leona\OneDrive\_2_Areas\Scripts.Previous\teachable\download_teachable_2025-02-04.log
+    Proposed Refactor Plan:
+    Separate size verification into distinct phases:
+       Phase 1: Download & Write
+      - Download chunks
+      - Write to .partial
+      - Ensure proper file close/flush
+      
+      Phase 2: Verification (only after file is fully closed)
+      - Get actual file size from disk
+      - Compare with expected size
+      - Rename if valid
+    Add detailed logging:
+    Log chunk sizes as they're received
+    Log accumulated size after each chunk
+    Log final buffer state
+    Log actual file size from disk
+    Log all size comparisons
+    Improve error handling:
+    Better distinguish between incomplete downloads and size mismatches
+    Add retry logic specifically for size mismatches
+    Add validation of file integrity beyond just size
 [ ] test latest composer changes: (2) 403 and file size mismatch + queue still running 
   The issue is likely that tasks with 403 errors are being marked as "done" but we're still waiting for their downloads to complete. Let's fix this by properly handling task completion and queue cleanup:
   there seems to be an issue with the active download count tracking. Let's analyze and fix this:
@@ -20,7 +42,12 @@
 [ ] Quiz Download? Test/Does it work?
 [ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
 [ ] (optional) File Naming and Indexing: Assign and manage index numbers for modules and lectures.
+[ ] fetch-all + download or process ohne id = alle kurse
 
+ - Test cli
+    ```uv run .\download_teachable_refactor.py process -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup\" 2464730  82286 42423 53614 2541213 2542182 2221627 2155884 1028039 42415 42072 2587150 249837 323424 54385 53223 461173 2463001 2448039 2596287 42414 2283477 1054462 1054548 317604 352710 41302 42303 234391 2665307```
+ - Failure Log
+    ```fgrep -v "handle_rate_limit:306" download_teachable_2025-02-04.log|fgrep -v "process_course:1022" |fgrep -v "get_all_courses:" |fgrep -v "process_course:1012"|fgrep -v "backup_existing_file" > failure-filtered.log```
 
 
 ## Prerequisites
