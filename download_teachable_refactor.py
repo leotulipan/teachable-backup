@@ -991,9 +991,10 @@ async def process_course(
     lecture_id: Optional[int],
     output_dir: pathlib.Path,
     valid_types: List[str],
-    download_manager: DownloadManager
+    download_manager: DownloadManager,
+    existing_course_name: Optional[str] = None
 ) -> None:
-    """Modified to start downloads immediately when attachments are discovered"""
+    """Modified to use pre-fetched course name if available"""
     try:
         course_data = await api_client.get_course(course_id)
         course_name = course_data["name"]
@@ -1006,15 +1007,11 @@ async def process_course(
     course_dir = output_dir / course_dirname
     course_dir.mkdir(parents=True, exist_ok=True)
 
-    # Potential rename check
-    all_courses = await api_client.get_all_courses()
-    for c in all_courses:
-        if c["id"] == course_id and c["name"] != course_name:
-            rename_course_directory(output_dir, course_id, course_name, c["name"])
-            course_name = c["name"]
-            course_dirname = f"{course_id} - {safe_filename(course_name)}"
-            course_dir = output_dir / course_dirname
-            break
+    # Check for rename only if we have the existing name
+    if existing_course_name and existing_course_name != course_name:
+        rename_course_directory(output_dir, course_id, course_name, existing_course_name)
+        course_dirname = f"{course_id} - {safe_filename(course_name)}"
+        course_dir = output_dir / course_dirname
 
     # Backup existing CSV
     course_data_path = course_dir / "course_data.csv"
@@ -1180,15 +1177,22 @@ async def main() -> None:
                     return
             elif args.operation == "process":
                 try:
+                    # Fetch all courses once at the beginning
+                    logger.info("Fetching all courses...")
+                    all_courses = await api_client.get_all_courses()
+                    course_names = {c["id"]: c["name"] for c in all_courses}
+
                     for course_id in args.course_ids:
+                        # Modified process_course to accept the course name
                         await process_course(
-                            api_client,
-                            course_id,
-                            args.module_id,
-                            args.lecture_id,
-                            args.output,
-                            args.types,
-                            download_manager
+                            api_client=api_client,
+                            course_id=course_id,
+                            module_id=args.module_id,
+                            lecture_id=args.lecture_id,
+                            output_dir=args.output,
+                            valid_types=args.types,
+                            download_manager=download_manager,
+                            existing_course_name=course_names.get(course_id)  # Pass existing name
                         )
                     # Wait for all downloads to complete
                     await download_manager.wait_for_downloads()
