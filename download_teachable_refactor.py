@@ -911,8 +911,27 @@ class DownloadManager:
                         self.failed_downloads.add(task.attachment_id)
                         logger.debug(f"Download failed: {task.attachment_name} - {self.get_status()}")
                 except asyncio.CancelledError:
-                    logger.info(f"Download cancelled for {task.attachment_name} - {self.get_status()}")
                     self.failed_downloads.add(task.attachment_id)
+                    # Enhanced logging for cancelled downloads
+                    admin_urls = format_admin_urls(
+                        course_info={
+                            'course_id': task.course_id,
+                            'course_name': task.course_name,
+                            'module_id': task.module_id,
+                            'module_name': task.module_name,
+                            'lecture_id': task.lecture_id,
+                            'lecture_name': task.lecture_name,
+                            'attachment_id': task.attachment_id,
+                            'attachment_kind': task.attachment_kind
+                        },
+                        attachment_id=task.attachment_id,
+                        attachment_kind=task.attachment_kind,
+                        url=task.url
+                    )
+                    logger.error(f"Download cancelled for {task.attachment_name}")
+                    for url_line in admin_urls.split('\n'):
+                        logger.error(url_line)
+                    logger.error(f"Status: {self.get_status()}")
                 except Exception as e:
                     logger.error(f"Error downloading {task.attachment_name}: {e} - {self.get_status()}")
                     self.failed_downloads.add(task.attachment_id)
@@ -992,9 +1011,10 @@ async def process_course(
     output_dir: pathlib.Path,
     valid_types: List[str],
     download_manager: DownloadManager,
-    existing_course_name: Optional[str] = None
+    existing_course_name: Optional[str] = None,
+    csv_only: bool = False
 ) -> None:
-    """Modified to use pre-fetched course name if available"""
+    """Modified to support csv-only mode"""
     try:
         course_data = await api_client.get_course(course_id)
         course_name = course_data["name"]
@@ -1067,7 +1087,7 @@ async def process_course(
                     lecture_name = lecture_name[:76] + "..."
                 logger.info(f"    Processing lecture: {lecture_name}")
 
-                # Process attachments and queue downloads immediately
+                # Process attachments and queue downloads only if not in csv-only mode
                 for attachment in lecture["attachments"]:
                     attachment_kind = attachment.get("kind")
                     if not attachment_kind or attachment_kind not in valid_types:
@@ -1077,8 +1097,9 @@ async def process_course(
                     filename = f"{section_position:02d}_{lecture['position']:02d}_{attachment['position']:02d}_{attachment['id']}_{safe_filename(attachment_name)}"
                     file_path = course_dir / filename
 
-                    # Queue download immediately
-                    await queue_download(attachment, file_path, lecture)
+                    # Queue download only if not in csv-only mode
+                    if not csv_only:
+                        await queue_download(attachment, file_path, lecture)
 
                 # Add lecture data to processed_data for CSV
                 processed_lecture_data = process_lecture_data(
@@ -1095,13 +1116,42 @@ async def process_course(
         save_data_to_csv(processed_data, course_data_path)
         logger.info(f"Course data saved to {course_data_path}")
 
-        # Wait for all downloads from this course to be queued
-        if download_tasks:
+        # Wait for downloads only if not in csv-only mode
+        if not csv_only and download_tasks:
             await asyncio.gather(*download_tasks)
 
     except Exception as e:
         logger.error(f"Error processing course {course_id}: {e}")
         raise
+
+async def process_courses(
+    api_client: TeachableAPIClient,
+    course_ids: List[int],
+    args,
+    download_manager: DownloadManager,
+    course_names: Dict[int, str]
+) -> None:
+    """Process multiple courses with shared configuration"""
+    # Get optional args with defaults
+    module_id = getattr(args, 'module_id', None)
+    lecture_id = getattr(args, 'lecture_id', None)
+    
+    for course_id in course_ids:
+        await process_course(
+            api_client=api_client,
+            course_id=course_id,
+            module_id=module_id,
+            lecture_id=lecture_id,
+            output_dir=args.output,
+            valid_types=args.types,
+            download_manager=download_manager,
+            existing_course_name=course_names.get(course_id),
+            csv_only=args.csv_only
+        )
+    
+    # Only wait for downloads if not in csv-only mode
+    if not args.csv_only:
+        await download_manager.wait_for_downloads()
 
 async def main() -> None:
     """Updated main function to use the download manager"""
@@ -1109,14 +1159,18 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Manage and download course data from Teachable.")
     subparsers = parser.add_subparsers(dest="operation", help="Operation to perform")
 
+    # Fetch-all command
     parser_fetch_all = subparsers.add_parser("fetch-all", help="Fetch and save all courses")
     parser_fetch_all.add_argument("--output", "-o", type=pathlib.Path, default=".", help="Directory to save the all courses CSV")
+    parser_fetch_all.add_argument("--csv-only", action="store_true", help="Only generate CSV file, skip downloading files")
 
+    # Process command
     parser_process = subparsers.add_parser("process", help="Process and download data for specific courses")
     parser_process.add_argument("course_ids", metavar="course_id", type=int, nargs="+", help="One or more Course IDs to process")
     parser_process.add_argument("--module_id", type=int, default=None, help="Optional module ID to filter processing")
     parser_process.add_argument("--lecture_id", type=int, default=None, help="Optional lecture ID to filter processing")
     parser_process.add_argument("--output", "-o", type=pathlib.Path, default=".", help="Directory to save course data")
+    parser_process.add_argument("--csv-only", action="store_true", help="Only generate course_data.csv files, skip downloading files")
 
     # ----------------------------------------------------------------------
     # NEW SUBCOMMAND: test-snippet
@@ -1146,8 +1200,9 @@ async def main() -> None:
     download_manager = DownloadManager(MAX_CONCURRENT_DOWNLOADS)
     
     try:
-        # Start the download manager consumers
-        await download_manager.start_consumers()
+        # Start the download manager consumers only if we're not in csv-only mode
+        if not (hasattr(args, 'csv_only') and args.csv_only):
+            await download_manager.start_consumers()
 
         async with TeachableAPIClient(api_key=os.environ.get("TEACHABLE_API_KEY", "")) as api_client:
             if args.operation == "test-snippet":
@@ -1168,45 +1223,62 @@ async def main() -> None:
                 return
             elif args.operation == "fetch-all":
                 try:
-                    courses = await api_client.get_all_courses()
+                    # Fetch and save all courses
+                    all_courses = await api_client.get_all_courses()
                     file_path = args.output / "all_courses_data.csv"
-                    save_data_to_csv(courses, file_path)
+                    save_data_to_csv(all_courses, file_path)
                     logger.info(f"All courses saved to {file_path}")
+
+                    if not args.csv_only:
+                        # Process all courses if not csv-only
+                        course_names = {c["id"]: c["name"] for c in all_courses}
+                        course_ids = [c["id"] for c in all_courses]
+                        await process_courses(
+                            api_client=api_client,
+                            course_ids=course_ids,
+                            args=args,
+                            download_manager=download_manager,
+                            course_names=course_names
+                        )
                 except asyncio.CancelledError:
                     logger.info("Operation interrupted. Progress saved.")
+                    if not args.csv_only:
+                        logger.info("Waiting for active downloads to complete...")
+                        download_manager.stop()
                     return
             elif args.operation == "process":
                 try:
                     # Fetch all courses once at the beginning
                     logger.info("Fetching all courses...")
                     all_courses = await api_client.get_all_courses()
+                    file_path = args.output / "all_courses_data.csv"
+                    save_data_to_csv(all_courses, file_path)
+                    logger.info(f"All courses saved to {file_path}")
+                                        
                     course_names = {c["id"]: c["name"] for c in all_courses}
 
-                    for course_id in args.course_ids:
-                        # Modified process_course to accept the course name
-                        await process_course(
-                            api_client=api_client,
-                            course_id=course_id,
-                            module_id=args.module_id,
-                            lecture_id=args.lecture_id,
-                            output_dir=args.output,
-                            valid_types=args.types,
-                            download_manager=download_manager,
-                            existing_course_name=course_names.get(course_id)  # Pass existing name
-                        )
-                    # Wait for all downloads to complete
-                    await download_manager.wait_for_downloads()
+                    await process_courses(
+                        api_client=api_client,
+                        course_ids=args.course_ids,
+                        args=args,
+                        download_manager=download_manager,
+                        course_names=course_names
+                    )
                 except asyncio.CancelledError:
-                    logger.info("Processing interrupted. Waiting for active downloads to complete...")
-                    download_manager.stop()
+                    logger.info("Processing interrupted.")
+                    if not args.csv_only:
+                        logger.info("Waiting for active downloads to complete...")
+                        download_manager.stop()
                     return
 
         logger.info("All tasks completed successfully.")
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Shutting down gracefully...")
-        download_manager.stop()
+        if not (hasattr(args, 'csv_only') and args.csv_only):
+            download_manager.stop()
     finally:
-        await download_manager.wait_for_downloads()
+        if not (hasattr(args, 'csv_only') and args.csv_only):
+            await download_manager.wait_for_downloads()
         logger.info("Cleanup complete.")
 
 # Updated entry point with proper signal handling for Windows
