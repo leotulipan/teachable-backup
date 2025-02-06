@@ -975,40 +975,23 @@ class DownloadManager:
     async def _process_download(self, task: DownloadTask) -> bool:
         """Process a single download task"""
         try:
-            # Check if file exists before attempting download
+            # Get actual file size from server first
+            async with aiohttp.ClientSession() as session:
+                async with session.head(task.url) as response:
+                    if 'Content-Length' in response.headers:
+                        task.file_size = int(response.headers['Content-Length'])
+
+            # Now check existing file with correct size
             if os.path.exists(task.file_path):
                 file_size = os.path.getsize(task.file_path)
-                expected_size = task.file_size
-                
-                if file_size == expected_size:
-                    logger.info(f"File already exists and is complete ({file_size} bytes): {task.attachment_name}")
+                if task.file_size and file_size == task.file_size:
+                    logger.info(f"File already exists and is complete ({file_size:,} bytes): {task.attachment_name}")
                     self.completed_downloads.add(task.attachment_id)
                     return True
-                else:
+                elif task.file_size:  # Only log mismatch if we have an expected size
                     logger.warning(f"File exists but size mismatch for attachment {task.attachment_id} - "
-                                 f"expected: {expected_size}, actual: {file_size}")
-                    
-                    # Record the failure
-                    frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN", "your-teachable-domain.com")
-                    view_lecture_url = f"https://{frontend_domain}/admin-app/courses/{task.course_id}/curriculum/lessons/{task.lecture_id}"
-                    manual_video_url = None
-                    if task.attachment_kind == 'video':
-                        manual_video_url = f"https://{frontend_domain}/api/v1/attachments/{task.attachment_id}/hotmart_video_download_link"
-                    
-                    self.failures.append(DownloadFailure(
-                        course_id=task.course_id,
-                        course_name=task.course_name or "Unknown",
-                        attachment_id=task.attachment_id,
-                        filename=task.file_path.name,
-                        actual_size=file_size,
-                        expected_size=expected_size,
-                        view_lecture_url=view_lecture_url,
-                        manual_video_url=manual_video_url,
-                        direct_download_url=task.url,
-                        error_type="size_mismatch"
-                    ))
-            
-            # ... rest of download logic ...
+                                 f"expected: {task.file_size:,}, actual: {file_size:,}")
+                    # ... rest of the code ...
             
         except asyncio.CancelledError:
             # Add failure record for cancelled downloads
