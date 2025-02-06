@@ -3,46 +3,17 @@
 **Teachable Backup Script**
 
 ## To-Dos
-[ ] check recent errors in C:\Users\leona\OneDrive\_2_Areas\Scripts.Previous\teachable\download_teachable_2025-02-04.log
-    Proposed Refactor Plan:
-    Separate size verification into distinct phases:
-       Phase 1: Download & Write
-      - Download chunks
-      - Write to .partial
-      - Ensure proper file close/flush
-      
-      Phase 2: Verification (only after file is fully closed)
-      - Get actual file size from disk
-      - Compare with expected size
-      - Rename if valid
-    Add detailed logging:
-    Log chunk sizes as they're received
-    Log accumulated size after each chunk
-    Log final buffer state
-    Log actual file size from disk
-    Log all size comparisons
-    Improve error handling:
-    Better distinguish between incomplete downloads and size mismatches
-    Add retry logic specifically for size mismatches
-    Add validation of file integrity beyond just size
-[ ] test latest composer changes: (2) 403 and file size mismatch + queue still running 
-  The issue is likely that tasks with 403 errors are being marked as "done" but we're still waiting for their downloads to complete. Let's fix this by properly handling task completion and queue cleanup:
-  there seems to be an issue with the active download count tracking. Let's analyze and fix this:
-    The log shows 4 file size mismatches but reports "Active downloads: 3"
-    The status reporting shows inconsistent active download counts
-    We need to ensure downloads are properly removed from active_downloads when they complete
 
-[ ] do we need process_course:854 all_courses = await api_client.get_all_courses() - cannot we fetch just this one course?
-[ ] CSV Format of refactor not correct ("id";"description";"name";"heading";"is_published";"image_url")
-  CSV -> Save as Excel or DE Windows Format CSV (easy open in Excel)
 [ ] User Info
     Page through users  <https://developers.teachable.com/v1/users?page=50&per=20>
     Get each ID and save the json <https://developers.teachable.com/v1/users/user_id>
     see saved example jsons
 [ ] Quiz Download? Test/Does it work?
+[ ] Add Title Image from Course saving
 [ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
-[ ] (optional) File Naming and Indexing: Assign and manage index numbers for modules and lectures.
-[ ] fetch-all + download or process ohne id = alle kurse
+    M01_L01_A01_99817098_Ket[..].mp4
+[ ] special case when we get 0 returned: 2025-02-05 10:17:35.111 | ERROR    | __main__:download_file:745 - File size mismatch for 01_01_01_99817098_Ket[..].mp4. Expected: 0, Got: 39,784,890
+                2025-02-05 10:18:31.645 | ERROR    | __main__:download_file:745 - File size mismatch for 09_01_00_3270505_Keto[..].mp4. Expected: 0, Got: 176,720,296
 
  - Test cli
     ```uv run .\download_teachable_refactor.py process -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup\" 2464730  82286 42423 53614 2541213 2542182 2221627 2155884 1028039 42415 42072 2587150 249837 323424 54385 53223 461173 2463001 2448039 2596287 42414 2283477 1054462 1054548 317604 352710 41302 42303 234391 2665307```

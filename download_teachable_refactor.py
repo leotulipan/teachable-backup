@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from dataclasses import dataclass
 from asyncio import Queue
+from collections import defaultdict
 
 # Constants
 API_MAX_CONCURRENT_CALLS = 2  # <--- Limit total Teachable API calls at once
@@ -812,6 +813,19 @@ class DownloadTask:
             'attachment_kind': self.attachment_kind  # Include attachment type in context
         }
 
+@dataclass
+class DownloadFailure:
+    course_id: int
+    course_name: str
+    attachment_id: int
+    filename: str
+    actual_size: Optional[int]
+    expected_size: Optional[int]
+    view_lecture_url: str
+    manual_video_url: Optional[str]
+    direct_download_url: str
+    error_type: str  # e.g. "size_mismatch", "download_failed", etc.
+
 class DownloadManager:
     """Centralized download manager for handling concurrent downloads"""
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_DOWNLOADS):
@@ -824,6 +838,7 @@ class DownloadManager:
         self.failed_downloads: Set[int] = set()  # Track actual failed downloads
         self.completed_downloads: Set[int] = set()  # Track successful downloads
         self._active_count = 0
+        self.failures: List[DownloadFailure] = []
 
     def get_status(self) -> str:
         """Returns current download manager status"""
@@ -959,20 +974,104 @@ class DownloadManager:
 
     async def _process_download(self, task: DownloadTask) -> bool:
         """Process a single download task"""
-        async with self.semaphore:
-            return await download_file(
-                task.url, 
-                task.file_path, 
-                self.semaphore,
-                course_info=task.to_context_dict()
-            )
+        try:
+            # Check if file exists before attempting download
+            if os.path.exists(task.file_path):
+                file_size = os.path.getsize(task.file_path)
+                expected_size = task.file_size
+                
+                if file_size == expected_size:
+                    logger.info(f"File already exists and is complete ({file_size} bytes): {task.attachment_name}")
+                    self.completed_downloads.add(task.attachment_id)
+                    return True
+                else:
+                    logger.warning(f"File exists but size mismatch for attachment {task.attachment_id} - "
+                                 f"expected: {expected_size}, actual: {file_size}")
+                    
+                    # Record the failure
+                    frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN", "your-teachable-domain.com")
+                    view_lecture_url = f"https://{frontend_domain}/admin-app/courses/{task.course_id}/curriculum/lessons/{task.lecture_id}"
+                    manual_video_url = None
+                    if task.attachment_kind == 'video':
+                        manual_video_url = f"https://{frontend_domain}/api/v1/attachments/{task.attachment_id}/hotmart_video_download_link"
+                    
+                    self.failures.append(DownloadFailure(
+                        course_id=task.course_id,
+                        course_name=task.course_name or "Unknown",
+                        attachment_id=task.attachment_id,
+                        filename=task.file_path.name,
+                        actual_size=file_size,
+                        expected_size=expected_size,
+                        view_lecture_url=view_lecture_url,
+                        manual_video_url=manual_video_url,
+                        direct_download_url=task.url,
+                        error_type="size_mismatch"
+                    ))
+            
+            # ... rest of download logic ...
+            
+        except asyncio.CancelledError:
+            # Add failure record for cancelled downloads
+            frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN", "your-teachable-domain.com")
+            view_lecture_url = f"https://{frontend_domain}/admin-app/courses/{task.course_id}/curriculum/lessons/{task.lecture_id}"
+            manual_video_url = None
+            if task.attachment_kind == 'video':
+                manual_video_url = f"https://{frontend_domain}/api/v1/attachments/{task.attachment_id}/hotmart_video_download_link"
+            
+            self.failures.append(DownloadFailure(
+                course_id=task.course_id,
+                course_name=task.course_name or "Unknown",
+                attachment_id=task.attachment_id,
+                filename=task.file_path.name,
+                actual_size=os.path.getsize(task.file_path) if os.path.exists(task.file_path) else None,
+                expected_size=task.file_size,
+                view_lecture_url=view_lecture_url,
+                manual_video_url=manual_video_url,
+                direct_download_url=task.url,
+                error_type="cancelled"
+            ))
+            raise
+
+    def print_failure_summary(self) -> None:
+        """Print a summary of all download failures to console"""
+        if not self.failures:
+            return
+
+        print("\nDownload Failures Summary:")
+        print("=" * 80)
+        
+        # Group failures by course
+        failures_by_course = defaultdict(list)
+        for failure in self.failures:
+            failures_by_course[(failure.course_id, failure.course_name)].append(failure)
+        
+        for (course_id, course_name), failures in failures_by_course.items():
+            print(f"\nCourse: {course_name} (ID: {course_id})")
+            print("-" * 80)
+            
+            for failure in failures:
+                print(f"\nFile: {failure.filename}")
+                print(f"Attachment ID: {failure.attachment_id}")
+                if failure.actual_size is not None:
+                    print(f"Size on disk: {failure.actual_size:,} bytes")
+                if failure.expected_size is not None:
+                    print(f"Expected size: {failure.expected_size:,} bytes")
+                print(f"Error type: {failure.error_type}")
+                print("\nRelevant URLs:")
+                print(f"  View lecture: {failure.view_lecture_url}")
+                if failure.manual_video_url:
+                    print(f"  Manual video download: {failure.manual_video_url}")
+                print(f"  Direct download: {failure.direct_download_url}")
+                print("-" * 40)
+        
+        print("\n" + "=" * 80)
 
     async def wait_for_downloads(self) -> None:
         """Wait for all queued downloads to complete"""
         if self.queue.empty() and not self.active_downloads:
             logger.info("No downloads to wait for")
             return
-            
+
         try:
             await asyncio.wait_for(self.queue.join(), timeout=30)
         except asyncio.TimeoutError:
@@ -1279,6 +1378,8 @@ async def main() -> None:
     finally:
         if not (hasattr(args, 'csv_only') and args.csv_only):
             await download_manager.wait_for_downloads()
+            if download_manager.failures:
+                download_manager.print_failure_summary()
         logger.info("Cleanup complete.")
 
 # Updated entry point with proper signal handling for Windows
