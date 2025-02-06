@@ -7,7 +7,8 @@
 [ ] User Info
     Page through users  <https://developers.teachable.com/v1/users?page=50&per=20>
     Get each ID and save the json <https://developers.teachable.com/v1/users/user_id>
-    see saved example jsons
+    add admin_url to json as per example
+    see saved example jsons <teachable/users_user_id_response.json>
 [ ] Quiz Download? Test/Does it work?
 [ ] Add Title Image from Course saving
 [ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)

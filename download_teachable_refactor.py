@@ -857,7 +857,7 @@ class DownloadManager:
         # Only include failed downloads if there are actual failures
         if self.failed_downloads:
             status += f", Failed downloads: {len(self.failed_downloads)}"
-            logger.error(f"Download failures detected: {status}")
+            
         return status
 
     def stop(self) -> None:
@@ -985,14 +985,14 @@ class DownloadManager:
             if os.path.exists(task.file_path):
                 file_size = os.path.getsize(task.file_path)
                 if task.file_size and file_size == task.file_size:
-                    logger.info(f"File already exists and is complete ({file_size:,} bytes): {task.attachment_name}")
+                    logger.info(f"Skipping attachment {task.attachment_id} - file already exists with correct size")
                     self.completed_downloads.add(task.attachment_id)
                     return True
                 elif task.file_size:  # Only log mismatch if we have an expected size
-                    logger.warning(f"File exists but size mismatch for attachment {task.attachment_id} - "
+                    logger.warning(f"Size mismatch for attachment {task.attachment_id} - "
                                  f"expected: {task.file_size:,}, actual: {file_size:,}")
-                    # ... rest of the code ...
-            
+                    # ... rest of the failure handling code ...
+
         except asyncio.CancelledError:
             # Add failure record for cancelled downloads
             frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN", "your-teachable-domain.com")
@@ -1052,19 +1052,19 @@ class DownloadManager:
     async def wait_for_downloads(self) -> None:
         """Wait for all queued downloads to complete"""
         if self.queue.empty() and not self.active_downloads:
-            logger.info("No downloads to wait for")
+            logger.debug("No downloads to wait for")
             return
 
         try:
             await asyncio.wait_for(self.queue.join(), timeout=30)
         except asyncio.TimeoutError:
-            logger.error(f"Timeout waiting for downloads to complete - {self.get_status()}")
+            logger.warning(f"Timeout waiting for downloads to complete - {self.get_status()}")
             self._stop = True
 
         # Clean up any remaining active downloads
         active_tasks = [task for task in self.active_downloads.values() if not task.done()]
         if active_tasks:
-            logger.error(f"Cancelling {len(active_tasks)} remaining downloads")
+            logger.warning(f"Cancelling {len(active_tasks)} remaining downloads")
             for task in active_tasks:
                 task.cancel()
             
@@ -1074,16 +1074,14 @@ class DownloadManager:
                     timeout=10
                 )
             except asyncio.TimeoutError:
-                logger.error("Timeout waiting for active downloads to cancel")
+                logger.warning("Timeout waiting for active downloads to cancel")
 
         # Final cleanup
         self.active_downloads.clear()
         if self.failed_downloads:
-            logger.error(f"Download manager shutdown complete with failures - {self.get_status()}")
-        elif self.completed_downloads:
-            logger.info(f"Download manager shutdown complete successfully - {self.get_status()}")
+            logger.info(f"Download manager completed with some failures - {self.get_status()}")
         else:
-            logger.info("Download manager shutdown complete - no downloads processed")
+            logger.info(f"Download manager completed successfully - {self.get_status()}")
 
 async def process_course(
     api_client: TeachableAPIClient,
