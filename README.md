@@ -4,11 +4,35 @@
 
 ## To-Dos
 
+[ ] why still "Download failed" errors, when the files are here. Why do we have failures but no summary output
+
+    2025-02-06 12:09:01.093 | INFO     | __main__:_process_download:988 - Skipping attachment 2888154 - file already exists with correct size
+    2025-02-06 12:09:01.094 | DEBUG    | __main__:_consumer_worker:923 - Download completed successfully: Lebensmittel-Guide.pdf - Active downloads: 5, Queue size: 1, Completed: 12, Failed downloads: 17
+    2025-02-06 12:09:01.094 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 5, Queue size: 1, Completed: 12, Failed downloads: 17
+    2025-02-06 12:09:01.106 | DEBUG    | __main__:_consumer_worker:927 - Download failed: 2016-10-23 - Keine Angst vor Fett.mp4 - Active downloads: 5, Queue size: 0, Completed: 12, Failed downloads: 18
+    2025-02-06 12:09:01.106 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 5, Queue size: 0, Completed: 12, Failed downloads: 18
+    2025-02-06 12:09:01.113 | INFO     | __main__:_process_download:988 - Skipping attachment 2665255 - file already exists with correct size
+    2025-02-06 12:09:01.113 | DEBUG    | __main__:_consumer_worker:923 - Download completed successfully: Zucker_und_Zuckeraustauschstoffe.pdf - Active downloads: 4, Queue size: 0, Completed: 13, Failed downloads: 18
+    2025-02-06 12:09:01.113 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 4, Queue size: 0, Completed: 13, Failed downloads: 18
+    2025-02-06 12:09:01.205 | DEBUG    | __main__:_consumer_worker:927 - Download failed: Keto bei Übergewicht - Energiebalance-Hormonbalance.mp4 - Active downloads: 3, Queue size: 0, Completed: 13, Failed downloads: 19
+    2025-02-06 12:09:01.205 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 3, Queue size: 0, Completed: 13, Failed downloads: 19
+    2025-02-06 12:09:01.283 | DEBUG    | __main__:_consumer_worker:927 - Download failed: W2 - Keto Wohl Formuliert.mp4 - Active downloads: 2, Queue size: 0, Completed: 13, Failed downloads: 20
+    2025-02-06 12:09:01.283 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 2, Queue size: 0, Completed: 13, Failed downloads: 20
+    2025-02-06 12:09:01.290 | DEBUG    | __main__:_consumer_worker:927 - Download failed: W2 Nährstoffdichte.mp4 - Active downloads: 1, Queue size: 0, Completed: 13, Failed downloads: 21
+    2025-02-06 12:09:01.290 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 1, Queue size: 0, Completed: 13, Failed downloads: 21
+    2025-02-06 12:09:01.313 | INFO     | __main__:_process_download:988 - Skipping attachment 3004422 - file already exists with correct size
+    2025-02-06 12:09:01.314 | DEBUG    | __main__:_consumer_worker:923 - Download completed successfully: Zuckeraustauschstoffe.mp4 - Active downloads: 0, Queue size: 0, Completed: 14, Failed downloads: 21
+    2025-02-06 12:09:01.314 | DEBUG    | __main__:_consumer_worker:958 - Task completed - Active downloads: 0, Queue size: 0, Completed: 14, Failed downloads: 21
+    2025-02-06 12:09:01.314 | ERROR    | __main__:_consumer_worker:962 - All downloads completed with some failures - Active downloads: 0, Queue size: 0, Completed: 14, Failed downloads: 21
+    2025-02-06 12:09:01.314 | INFO     | __main__:wait_for_downloads:1082 - Download manager completed with some failures - Active downloads: 0, Queue size: 0, Completed: 14, Failed downloads: 21
+    2025-02-06 12:09:01.315 | INFO     | __main__:main:1354 - All tasks completed successfully.
+    2025-02-06 12:09:01.315 | DEBUG    | __main__:wait_for_downloads:1055 - No downloads to wait for
+
+
 [ ] User Info
-    Page through users  <https://developers.teachable.com/v1/users?page=50&per=20>
     Get each ID and save the json <https://developers.teachable.com/v1/users/user_id>
-    add admin_url to json as per example
-    see saved example jsons <teachable/users_user_id_response.json>
+      add admin_url to json as per example
+      see saved example jsons <teachable/users_user_id_response.json>
 [ ] Quiz Download? Test/Does it work?
 [ ] Add Title Image from Course saving
 [ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)

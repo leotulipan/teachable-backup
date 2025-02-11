@@ -17,6 +17,8 @@ from loguru import logger
 from dataclasses import dataclass
 from asyncio import Queue
 from collections import defaultdict
+from datetime import datetime, timedelta
+import json
 
 # Constants
 API_MAX_CONCURRENT_CALLS = 2  # <--- Limit total Teachable API calls at once
@@ -1233,8 +1235,240 @@ async def process_courses(
     if not args.csv_only:
         await download_manager.wait_for_downloads()
 
+async def get_user_details(api_client: TeachableAPIClient, user_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetch details for a specific user and enrich the data with additional fields.
+    
+    Args:
+        api_client: The API client instance
+        user_id: The ID of the user to fetch
+    
+    Returns:
+        Optional[Dict[str, Any]]: Enriched user data or None if fetch fails
+    """
+    try:
+        user_data = await api_client.get(f"/users/{user_id}")
+        if not user_data:
+            return None
+            
+        # Get the base user data
+        user = user_data.get("user", {})
+        if not user:
+            return None
+            
+        # Add date_added field
+        user["date_added"] = datetime.now(datetime.UTC).isoformat() + "Z"
+        
+        # Add admin_url to each course
+        frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN")
+        if frontend_domain and "courses" in user:
+            for course in user["courses"]:
+                course["admin_url"] = (
+                    f"https://{frontend_domain}/admin/users/{user_id}/reports"
+                    f"?course_id={course['course_id']}&page=1&limit=10"
+                )
+        
+        return user
+        
+    except Exception as e:
+        logger.error(f"Error fetching user {user_id}: {e}")
+        return None
+
+async def process_user(
+    api_client: TeachableAPIClient,
+    user_id: int,
+    users_file: pathlib.Path,
+    existing_users: Dict[int, datetime]
+) -> None:
+    """
+    Process a single user: fetch details and save to NDJSON if needed.
+    """
+    try:
+        # Check if user exists and is recent enough
+        if user_id in existing_users:
+            date_added = existing_users[user_id]
+            if datetime.now(datetime.UTC) - date_added < timedelta(days=7):
+                logger.debug(f"Skipping user {user_id} - data is less than 7 days old")
+                return
+
+        # Fetch and enrich user details
+        user_data = await get_user_details(api_client, user_id)
+        if not user_data:
+            logger.warning(f"No data returned for user {user_id}")
+            return
+
+        # Append to NDJSON file
+        try:
+            with open(users_file, "a", encoding="utf-8") as f:
+                json_line = json.dumps(user_data)
+                f.write(json_line + "\n")
+                f.flush()  # Ensure write is committed to disk
+                os.fsync(f.fileno())  # Force write to disk
+                logger.info(f"Saved user {user_id} to {users_file}")
+        except Exception as e:
+            logger.error(f"Error saving user {user_id} to NDJSON: {e}")
+            raise  # Re-raise to be caught by outer try
+            
+    except Exception as e:
+        logger.error(f"Failed to process user {user_id}: {e}")
+        raise  # Re-raise to be caught by semaphore wrapper
+
+def load_existing_users(users_file: pathlib.Path) -> Dict[int, datetime]:
+    """
+    Load existing users from NDJSON file with their date_added.
+    
+    Args:
+        users_file: Path to the NDJSON file
+    
+    Returns:
+        Dict[int, datetime]: Dictionary of user IDs and their date_added
+    """
+    existing_users = {}
+    if not users_file.exists():
+        return existing_users
+
+    try:
+        with open(users_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    user_data = json.loads(line)
+                    user_id = user_data.get("id")
+                    date_added_str = user_data.get("date_added")
+                    if user_id and date_added_str:
+                        # Remove the 'Z' suffix if present and parse the date
+                        date_added_str = date_added_str.rstrip("Z")
+                        date_added = datetime.fromisoformat(date_added_str)
+                        existing_users[user_id] = date_added
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        logger.error(f"Error loading existing users: {e}")
+
+    return existing_users
+
+async def get_all_users(api_client: TeachableAPIClient, output_dir: pathlib.Path) -> None:
+    """
+    Fetch all users and save them to NDJSON file.
+    Uses concurrent processing to fetch user details while getting next pages.
+    
+    Args:
+        api_client: The API client instance
+        output_dir: Directory to save the users file
+    """
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+    users_file = output_dir / "users.ndjson"
+    
+    # Load existing users
+    existing_users = load_existing_users(users_file)
+    logger.info(f"Loaded {len(existing_users)} existing users from {users_file}")
+
+    # Create semaphores for API calls
+    page_semaphore = asyncio.Semaphore(1)  # One page at a time
+    user_semaphore = asyncio.Semaphore(API_MAX_CONCURRENT_CALLS - 1)  # Leave one slot for page fetching
+    
+    page = 1
+    per_page = 20
+    active_tasks: Set[asyncio.Task] = set()
+    total_processed = 0
+    
+    while True:
+        try:
+            async with page_semaphore:
+                logger.info(f"Fetching {per_page} users from page {page}...")
+                data = await api_client.get("/users", params={"page": page, "per": per_page})
+                
+                if not data or "users" not in data:
+                    break
+                    
+                users = data["users"]
+                if not users:
+                    break
+
+                logger.info(f"Processing {len(users)} users from page {page}")
+                
+                # Start processing users from this page concurrently
+                for user in users:
+                    user_id = user.get("id")
+                    if user_id:
+                        # Create task with user semaphore
+                        task = asyncio.create_task(
+                            process_user_with_semaphore(
+                                api_client, 
+                                user_id, 
+                                users_file, 
+                                existing_users, 
+                                user_semaphore
+                            )
+                        )
+                        active_tasks.add(task)
+                        task.add_done_callback(active_tasks.discard)
+                        total_processed += 1
+
+                # Check if we've processed all pages
+                meta = data.get("meta", {})
+                total_pages = meta.get("number_of_pages", 1)
+                if page >= total_pages:
+                    break
+                
+                # Stop after 2 pages (for testing)
+                if page >= 2:
+                    break
+                    
+                page += 1
+                
+                # Wait for some tasks to complete if we have too many
+                if len(active_tasks) >= API_MAX_CONCURRENT_CALLS * 2:
+                    completed, pending = await asyncio.wait(
+                        active_tasks, 
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    logger.info(
+                        f"Completed batch of {len(completed)} user fetches, "
+                        f"{len(pending)} pending, "
+                        f"total processed: {total_processed}"
+                    )
+                
+        except Exception as e:
+            logger.error(f"Error processing page {page}: {e}")
+            break
+
+    # Wait for all remaining user processing to complete
+    if active_tasks:
+        logger.info(f"Waiting for {len(active_tasks)} remaining user fetches to complete...")
+        try:
+            await asyncio.gather(*active_tasks)
+        except Exception as e:
+            logger.error(f"Error while waiting for remaining tasks: {e}")
+
+    # Verify file was created and has content
+    if users_file.exists():
+        try:
+            with open(users_file, "r") as f:
+                line_count = sum(1 for _ in f)
+            logger.info(f"Completed fetching all users. Saved {line_count} users to {users_file}")
+        except Exception as e:
+            logger.error(f"Error counting lines in output file: {e}")
+    else:
+        logger.error(f"No output file was created at {users_file}")
+
+async def process_user_with_semaphore(
+    api_client: TeachableAPIClient,
+    user_id: int,
+    users_file: pathlib.Path,
+    existing_users: Dict[int, datetime],
+    semaphore: asyncio.Semaphore
+) -> None:
+    """
+    Wrapper for process_user that uses a semaphore for concurrency control.
+    """
+    async with semaphore:
+        await process_user(api_client, user_id, users_file, existing_users)
+
 async def main() -> None:
-    """Updated main function to use the download manager"""
+    """Main function with the new get-users command"""
     import argparse
     parser = argparse.ArgumentParser(description="Manage and download course data from Teachable.")
     subparsers = parser.add_subparsers(dest="operation", help="Operation to perform")
@@ -1268,6 +1502,19 @@ async def main() -> None:
         nargs="*",
         default=["pdf", "file", "image", "video", "audio", "pdf_embed"],
         help="Types of attachments to download",
+    )
+
+    # Add new get-users command
+    parser_get_users = subparsers.add_parser(
+        "get-users",
+        help="Fetch all users and save to NDJSON file"
+    )
+    parser_get_users.add_argument(
+        "--output", 
+        "-o", 
+        type=pathlib.Path,
+        default=".",
+        help="Directory to save the users NDJSON file"
     )
 
     args = parser.parse_args()
@@ -1350,6 +1597,8 @@ async def main() -> None:
                         logger.info("Waiting for active downloads to complete...")
                         download_manager.stop()
                     return
+            elif args.operation == "get-users":
+                await get_all_users(api_client, args.output)
 
         logger.info("All tasks completed successfully.")
     except KeyboardInterrupt:
