@@ -17,7 +17,7 @@ from loguru import logger
 from dataclasses import dataclass
 from asyncio import Queue
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, UTC
 import json
 
 # Constants
@@ -1249,15 +1249,20 @@ async def get_user_details(api_client: TeachableAPIClient, user_id: int) -> Opti
     try:
         user_data = await api_client.get(f"/users/{user_id}")
         if not user_data:
+            logger.debug(f"API returned no data for user {user_id}")
             return None
             
-        # Get the base user data
-        user = user_data.get("user", {})
+        # Debug log the raw response
+        logger.debug(f"Raw API response for user {user_id}: {json.dumps(user_data)[:200]}...")
+            
+        # The API returns the user object directly, not wrapped in a "user" key
+        user = user_data
         if not user:
+            logger.debug(f"No user data found in response for user {user_id}")
             return None
             
-        # Add date_added field
-        user["date_added"] = datetime.now(datetime.UTC).isoformat() + "Z"
+        # Use datetime.UTC directly since we're on Python 3.12
+        user["date_added"] = datetime.now(UTC).isoformat()
         
         # Add admin_url to each course
         frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN")
@@ -1271,7 +1276,8 @@ async def get_user_details(api_client: TeachableAPIClient, user_id: int) -> Opti
         return user
         
     except Exception as e:
-        logger.error(f"Error fetching user {user_id}: {e}")
+        logger.error(f"Error fetching user {user_id}: {str(e)}")
+        logger.debug(f"Error details for user {user_id}: {traceback.format_exc()}")
         return None
 
 async def process_user(
@@ -1304,24 +1310,19 @@ async def process_user(
                 f.write(json_line + "\n")
                 f.flush()  # Ensure write is committed to disk
                 os.fsync(f.fileno())  # Force write to disk
-                logger.info(f"Saved user {user_id} to {users_file}")
+                logger.info(f"Saved user {user_id} ({user_data.get('name', 'Unknown')}) to {users_file}")
         except Exception as e:
-            logger.error(f"Error saving user {user_id} to NDJSON: {e}")
+            logger.error(f"Error saving user {user_id} to NDJSON: {str(e)}")
             raise  # Re-raise to be caught by outer try
             
     except Exception as e:
-        logger.error(f"Failed to process user {user_id}: {e}")
+        logger.error(f"Failed to process user {user_id}: {str(e)}")
+        logger.debug(f"Error details for user {user_id}: {traceback.format_exc()}")
         raise  # Re-raise to be caught by semaphore wrapper
 
 def load_existing_users(users_file: pathlib.Path) -> Dict[int, datetime]:
     """
     Load existing users from NDJSON file with their date_added.
-    
-    Args:
-        users_file: Path to the NDJSON file
-    
-    Returns:
-        Dict[int, datetime]: Dictionary of user IDs and their date_added
     """
     existing_users = {}
     if not users_file.exists():
@@ -1329,7 +1330,7 @@ def load_existing_users(users_file: pathlib.Path) -> Dict[int, datetime]:
 
     try:
         with open(users_file, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_num, line in enumerate(f, 1):
                 if not line.strip():
                     continue
                 try:
@@ -1337,14 +1338,21 @@ def load_existing_users(users_file: pathlib.Path) -> Dict[int, datetime]:
                     user_id = user_data.get("id")
                     date_added_str = user_data.get("date_added")
                     if user_id and date_added_str:
-                        # Remove the 'Z' suffix if present and parse the date
-                        date_added_str = date_added_str.rstrip("Z")
+                        # Parse ISO format date with timezone
                         date_added = datetime.fromisoformat(date_added_str)
+                        # Ensure UTC
+                        if date_added.tzinfo is None:
+                            date_added = date_added.replace(tzinfo=timezone.UTC)
                         existing_users[user_id] = date_added
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON at line {line_num}: {str(e)}")
+                    continue
+                except ValueError as e:
+                    logger.warning(f"Invalid date format at line {line_num}: {str(e)}")
                     continue
     except Exception as e:
-        logger.error(f"Error loading existing users: {e}")
+        logger.error(f"Error loading existing users: {str(e)}")
+        logger.debug(f"Error details: {traceback.format_exc()}")
 
     return existing_users
 
@@ -1370,7 +1378,7 @@ async def get_all_users(api_client: TeachableAPIClient, output_dir: pathlib.Path
     user_semaphore = asyncio.Semaphore(API_MAX_CONCURRENT_CALLS - 1)  # Leave one slot for page fetching
     
     page = 1
-    per_page = 20
+    per_page = 5
     active_tasks: Set[asyncio.Task] = set()
     total_processed = 0
     
