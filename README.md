@@ -4,7 +4,6 @@
 
 ## To-Dos
 
-[ ] Quiz Download? Test/Does it work?
 [ ] Add Title Image from Course saving
 [ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
     M01_L01_A01_99817098_Ket[..].mp4
