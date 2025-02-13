@@ -4,12 +4,6 @@
 
 ## To-Dos
 
-[ ] Add Title Image from Course saving
-[ ] (optional) rename existing downloads track old/new filenames? make filenames clearer (ie Course, Module, Lecture, length.mp3)
-    M01_L01_A01_99817098_Ket[..].mp4
-
- - Test cli
-    ```uv run .\download_teachable_refactor.py process -o "G:\Geteilte Ablagen\JuliaTulipan\Teachable Backup\" 2464730  82286 42423 53614 2541213 2542182 2221627 2155884 1028039 42415 42072 2587150 249837 323424 54385 53223 461173 2463001 2448039 2596287 42414 2283477 1054462 1054548 317604 352710 41302 42303 234391 2665307```
  - Failure Log
     ```fgrep -v "handle_rate_limit:306" download_teachable_2025-02-04.log|fgrep -v "process_course:1022" |fgrep -v "get_all_courses:" |fgrep -v "process_course:1012"|fgrep -v "backup_existing_file" > failure-filtered.log```
 

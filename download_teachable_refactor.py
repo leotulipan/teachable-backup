@@ -1052,6 +1052,9 @@ async def process_course(
     csv_only: bool = False
 ) -> None:
     """Modified to support csv-only mode"""
+    # Initialize download_tasks set at the start
+    download_tasks = set()  # Track download tasks for this course
+    
     try:
         course_data = await api_client.get_course(course_id)
         course_name = course_data["name"]
@@ -1070,6 +1073,35 @@ async def process_course(
         course_dirname = f"{course_id} - {safe_filename(course_name)}"
         course_dir = output_dir / course_dirname
 
+    # Download course cover image if available and not in csv-only mode
+    if not csv_only and (image_url := course_data.get("image_url")):
+        # Extract extension from URL or default to .jpg
+        ext = pathlib.Path(image_url).suffix
+        if not ext or ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+            ext = '.jpg'  # Default extension if none found or not recognized
+            
+        cover_filename = f"{course_id} - {safe_filename(course_name)} - Cover{ext}"
+        cover_path = course_dir / cover_filename
+        
+        # Queue the cover image download
+        download_task = DownloadTask(
+            url=image_url,
+            file_path=cover_path,
+            course_id=course_id,
+            lecture_id=0,  # Not applicable for cover image
+            attachment_id=0,  # Not applicable for cover image
+            attachment_name="Course Cover",
+            attachment_kind="image",
+            file_size=None,
+            course_name=course_name,
+            module_id=None,
+            module_name=None,
+            lecture_name=None
+        )
+        task = asyncio.create_task(download_manager.add_task(download_task))
+        download_tasks.add(task)
+        logger.info(f"Queued download of course cover image: {cover_filename}")
+
     # Backup existing CSV
     course_data_path = course_dir / "course_data.csv"
     backup_existing_file(course_data_path)
@@ -1083,7 +1115,6 @@ async def process_course(
         return
 
     processed_data = []
-    download_tasks = set()  # Track download tasks for this course
 
     async def queue_download(attachment: Dict[str, Any], 
                            file_path: pathlib.Path,
