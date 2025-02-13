@@ -515,23 +515,56 @@ class TeachableAPIClient:
             return await self.get(f"/courses/{course_id}/lectures/{lecture_id}/videos/{attachment_id}")
         return await self.get(f"/courses/{course_id}/lectures/{lecture_id}/attachments/{attachment_id}")
 
-# Removed TaskManager and worker threads. We now use async concurrency.
-
 async def rename_if_needed(directory: pathlib.Path, new_filename: str, attachment_id: str) -> None:
     """
-    Checks if a file with the attachment ID exists, and if so, renames it to the new filename.
+    Checks if files with the attachment ID exist, and if so:
+    1. If multiple files exist, keeps only the newest one with same size
+    2. Renames the kept file to the new filename
     Ignores .partial files as they are temporary download files.
     """
-    # Find files containing the attachment ID, excluding .partial files
-    existing_file = None
-    for file in directory.iterdir():
+    # Find all files containing the attachment ID, excluding .partial files
+    matching_files = [
+        file for file in directory.iterdir()
         if (file.is_file() and 
             f"_{attachment_id}_" in file.name and 
-            not file.name.endswith('.partial')):
-            existing_file = file
-            break
+            not file.name.endswith('.partial'))
+    ]
 
-    if existing_file:
+    if len(matching_files) > 1:
+        # Group files by size
+        files_by_size = {}
+        for file in matching_files:
+            size = file.stat().st_size
+            if size not in files_by_size:
+                files_by_size[size] = []
+            files_by_size[size].append(file)
+
+        # For each size group, keep only the newest file
+        for size, files in files_by_size.items():
+            if len(files) > 1:
+                # Sort by modification time, newest first
+                files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                newest_file = files[0]
+                
+                # Remove all but the newest file
+                for file in files[1:]:
+                    try:
+                        file.unlink()
+                        logger.info(f"Removed duplicate file: {file}")
+                    except OSError as e:
+                        logger.error(f"Error removing duplicate file {file}: {e}")
+
+        # After cleanup, get the remaining file
+        matching_files = [
+            file for file in directory.iterdir()
+            if (file.is_file() and 
+                f"_{attachment_id}_" in file.name and 
+                not file.name.endswith('.partial'))
+        ]
+
+    # Proceed with renaming if we have a file
+    if matching_files:
+        existing_file = matching_files[0]
         new_path = directory / new_filename
         if existing_file != new_path:
             try:
@@ -869,7 +902,7 @@ class DownloadManager:
                 async with session.head(task.url) as response:
                     if 'Content-Length' in response.headers:
                         task.file_size = int(response.headers['Content-Length'])
-            logger.debug(f"File size: {task.file_size}")
+                        logger.debug(f"Server reports size {task.file_size:,} bytes for attachment {task.attachment_id}")
 
             # Now check existing file with correct size
             if os.path.exists(task.file_path):
@@ -881,7 +914,41 @@ class DownloadManager:
                 elif task.file_size:  # Only log mismatch if we have an expected size
                     logger.warning(f"Size mismatch for attachment {task.attachment_id} - "
                                  f"expected: {task.file_size:,}, actual: {file_size:,}")
-                    # ... rest of the failure handling code ...
+
+            # Actually perform the download
+            success = await download_file(
+                url=task.url,
+                file_path=task.file_path,
+                semaphore=self.semaphore,
+                course_info=task.to_context_dict(),
+                verify=True
+            )
+
+            if success:
+                self.completed_downloads.add(task.attachment_id)
+                return True
+            else:
+                self.failed_downloads.add(task.attachment_id)
+                # Add to failures list for summary
+                frontend_domain = os.environ.get("TEACHABLE_FRONTEND_DOMAIN", "your-teachable-domain.com")
+                view_lecture_url = f"https://{frontend_domain}/admin-app/courses/{task.course_id}/curriculum/lessons/{task.lecture_id}"
+                manual_video_url = None
+                if task.attachment_kind == 'video':
+                    manual_video_url = f"https://{frontend_domain}/api/v1/attachments/{task.attachment_id}/hotmart_video_download_link"
+                
+                self.failures.append(DownloadFailure(
+                    course_id=task.course_id,
+                    course_name=task.course_name or "Unknown",
+                    attachment_id=task.attachment_id,
+                    filename=task.file_path.name,
+                    actual_size=os.path.getsize(task.file_path) if os.path.exists(task.file_path) else None,
+                    expected_size=task.file_size,
+                    view_lecture_url=view_lecture_url,
+                    manual_video_url=manual_video_url,
+                    direct_download_url=task.url,
+                    error_type="download_failed"
+                ))
+                return False
 
         except asyncio.CancelledError:
             # Add failure record for cancelled downloads
@@ -999,7 +1066,7 @@ async def process_course(
 
     # Check for rename only if we have the existing name
     if existing_course_name and existing_course_name != course_name:
-        rename_course_directory(output_dir, course_id, course_name, existing_course_name)
+        rename_course_directory(output_dir, course_id, existing_course_name, course_name)
         course_dirname = f"{course_id} - {safe_filename(course_name)}"
         course_dir = output_dir / course_dirname
 
@@ -1023,6 +1090,13 @@ async def process_course(
                            lecture: Dict[str, Any]) -> None:
         """Helper to queue a download and track its task"""
         if url := attachment.get("url"):
+            # First check if we need to rename any existing files
+            await rename_if_needed(
+                file_path.parent,
+                file_path.name,
+                str(attachment["id"])
+            )
+            
             download_task = DownloadTask(
                 url=url,
                 file_path=file_path,
@@ -1060,11 +1134,47 @@ async def process_course(
                 # Process attachments and queue downloads only if not in csv-only mode
                 for attachment in lecture["attachments"]:
                     attachment_kind = attachment.get("kind")
+                    
+                    # Handle text and quiz content directly from the API response
+                    if not csv_only and attachment_kind in ["text", "code_embed", "code_display"] and attachment.get("text"):
+                        filename = f"M{section_position:02d}_L{lecture['position']:02d}_A{attachment['position']:02d}_{attachment['id']}_Text.html"
+                        file_path = course_dir / filename
+                        
+                        # Check for renames before saving
+                        await rename_if_needed(
+                            file_path.parent,
+                            file_path.name,
+                            str(attachment["id"])
+                        )
+                        
+                        # Save the HTML content
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            f.write(attachment["text"])
+                        logger.info(f"      Saved text content to {filename}")
+                    
+                    # Handle quiz content
+                    elif not csv_only and attachment_kind == "quiz" and attachment.get("quiz"):
+                        filename = f"M{section_position:02d}_L{lecture['position']:02d}_A{attachment['position']:02d}_{attachment['id']}_Quiz.json"
+                        file_path = course_dir / filename
+                        
+                        # Check for renames before saving
+                        await rename_if_needed(
+                            file_path.parent,
+                            file_path.name,
+                            str(attachment["id"])
+                        )
+                        
+                        # Save the quiz content
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            json.dump(attachment["quiz"], f, indent=2)
+                        logger.info(f"      Saved quiz content to {filename}")
+
+                    # Continue with regular attachment processing
                     if not attachment_kind or attachment_kind not in valid_types:
                         continue
 
                     attachment_name = normalize_utf_filename(attachment.get("name") or "")
-                    filename = f"{section_position:02d}_{lecture['position']:02d}_{attachment['position']:02d}_{attachment['id']}_{safe_filename(attachment_name)}"
+                    filename = f"M{section_position:02d}_L{lecture['position']:02d}_A{attachment['position']:02d}_{attachment['id']}_{safe_filename(attachment_name)}"
                     file_path = course_dir / filename
 
                     # Queue download only if not in csv-only mode
