@@ -612,12 +612,27 @@ async def download_file(
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 # Do HEAD request to get file size
                 async with session.head(url, headers={"Accept-Ranges": "bytes"}) as head_response:
+                    if head_response.status == 403:
+                        # Handle 403 Forbidden error
+                        attachment_id = course_info.get('attachment_id') if course_info else None
+                        attachment_kind = course_info.get('attachment_kind')
+                        admin_urls = format_admin_urls(course_info, attachment_id, attachment_kind, url)
+                        
+                        logger.error(f"Access forbidden (403) for: {format_filename_for_log(file_path.name)}")
+                        for url_line in admin_urls.split('\n'):
+                            logger.error(url_line)
+                        
+                        if file_path.exists():
+                            file_path.unlink()
+                        return False
+                    
                     supports_resume = "Accept-Ranges" in head_response.headers
                     file_size = int(head_response.headers.get("Content-Length", 0))
+                    logger.debug(
+                        f"HEAD request for {format_filename_for_log(file_path.name)}: "
+                        f"size={file_size:,} bytes, supports_resume={supports_resume}"
+                    )
                     
-                    logger.debug(f"HEAD request for {format_filename_for_log(file_path.name)}: "
-                               f"size={file_size:,} bytes, supports_resume={supports_resume}")
-
                     # For small files, always start fresh
                     if file_size < SMALL_FILE_THRESHOLD:
                         if partial_path.exists():
@@ -631,11 +646,24 @@ async def download_file(
                             # For small files, if size mismatch, remove and redownload
                             logger.info(f"Size mismatch for small file, redownloading: {format_filename_for_log(file_path.name)}")
                             file_path.unlink()
-
+                
                 # Start the actual download
                 headers = {"Range": f"bytes={start_pos}-"} if start_pos > 0 else {}
                 async with session.get(url, headers=headers) as response:
-                    if response.status >= 400:
+                    if response.status == 403:
+                        # Handle 403 Forbidden error
+                        attachment_id = course_info.get('attachment_id') if course_info else None
+                        attachment_kind = course_info.get('attachment_kind')
+                        admin_urls = format_admin_urls(course_info, attachment_id, attachment_kind, url)
+                        
+                        logger.error(f"Access forbidden (403) for: {format_filename_for_log(file_path.name)}")
+                        for url_line in admin_urls.split('\n'):
+                            logger.error(url_line)
+                        
+                        if file_path.exists():
+                            file_path.unlink()
+                        return False
+                    elif response.status >= 400:
                         error_text = await response.text()
                         attachment_id = course_info.get('attachment_id') if course_info else None
                         attachment_kind = course_info.get('attachment_kind')
@@ -645,9 +673,8 @@ async def download_file(
                         for url_line in admin_urls.split('\n'):
                             logger.error(url_line)
                         
-                        if response.status == 403:
-                            error_msg = f"Cannot fetch file: {response.status} {response.reason}"
-                            file_path.write_text(error_msg)
+                        if file_path.exists():
+                            file_path.unlink()
                         return False
 
                     # For small files, download directly to final location
@@ -703,6 +730,10 @@ async def download_file(
 
         except Exception as e:
             logger.error(f"Error downloading {format_filename_for_log(file_path.name)}: {e}")
+            if file_path.exists():
+                file_path.unlink()
+            # if partial_path.exists():
+            #     partial_path.unlink()
             return False
 
 @dataclass
@@ -845,7 +876,7 @@ class DownloadManager:
                     else:
                         # Only mark as failed if actually failed
                         self.failed_downloads.add(task.attachment_id)
-                        logger.debug(f"Download failed: {str(task.file_path)[8:]} {task.attachment_name} - {self.get_status()}")
+                        logger.debug(f"Download failed: {str(task.file_path)[11:]} {task.attachment_name} - {self.get_status()}")
                 except asyncio.CancelledError:
                     self.failed_downloads.add(task.attachment_id)
                     # Enhanced logging for cancelled downloads
@@ -864,7 +895,7 @@ class DownloadManager:
                         attachment_kind=task.attachment_kind,
                         url=task.url
                     )
-                    logger.error(f"Download cancelled for {task.attachment_name}")
+                    logger.error(f"Download cancelled for {str(task.file_path)[11:]} {task.attachment_name}")
                     for url_line in admin_urls.split('\n'):
                         logger.error(url_line)
                     logger.error(f"Status: {self.get_status()}")
@@ -1230,7 +1261,15 @@ async def process_course(
 
         # Wait for downloads only if not in csv-only mode
         if not csv_only and download_tasks:
-            await asyncio.gather(*download_tasks)
+            logger.info(f"Waiting for {len(download_tasks)} downloads to complete...")
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*download_tasks, return_exceptions=True),
+                    timeout=30
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for downloads to complete; proceeding.")
+            logger.info("All downloads completed for this course")
 
     except Exception as e:
         logger.error(f"Error processing course {course_id}: {e}")
