@@ -861,59 +861,89 @@ class DownloadManager:
                     self.queue.task_done()
                     continue
 
-                # Process the download
-                download_task = asyncio.create_task(
-                    self._process_download(task)
-                )
-                self.active_downloads[task.attachment_id] = download_task
-                
-                try:
-                    success = await download_task
-                    if success:
-                        # Mark as completed if successful
-                        self.completed_downloads.add(task.attachment_id)
-                        logger.debug(f"Download completed successfully: {task.attachment_name} - {self.get_status()}")
-                    else:
-                        # Only mark as failed if actually failed
-                        self.failed_downloads.add(task.attachment_id)
-                        logger.debug(f"Download failed: {str(task.file_path)[11:]} {task.attachment_name} - {self.get_status()}")
-                except asyncio.CancelledError:
-                    self.failed_downloads.add(task.attachment_id)
-                    # Enhanced logging for cancelled downloads
-                    admin_urls = format_admin_urls(
-                        course_info={
-                            'course_id': task.course_id,
-                            'course_name': task.course_name,
-                            'module_id': task.module_id,
-                            'module_name': task.module_name,
-                            'lecture_id': task.lecture_id,
-                            'lecture_name': task.lecture_name,
-                            'attachment_id': task.attachment_id,
-                            'attachment_kind': task.attachment_kind
-                        },
-                        attachment_id=task.attachment_id,
-                        attachment_kind=task.attachment_kind,
-                        url=task.url
-                    )
-                    logger.error(f"Download cancelled for {str(task.file_path)[11:]} {task.attachment_name}")
-                    for url_line in admin_urls.split('\n'):
-                        logger.error(url_line)
-                    logger.error(f"Status: {self.get_status()}")
-                except Exception as e:
-                    logger.error(f"Error downloading {task.attachment_name}: {e} - {self.get_status()}")
-                    self.failed_downloads.add(task.attachment_id)
-                finally:
-                    if task.attachment_id in self.active_downloads:
-                        self.active_downloads.pop(task.attachment_id)
-                    self.queue.task_done()
-                    status = self.get_status()
-                    logger.debug(f"Task completed - {status}")
-
-                    if self.queue.empty() and not self.active_downloads:
-                        if self.failed_downloads:
-                            logger.error(f"All downloads completed with some failures - {status}")
+                # Add retry logic for cancelled downloads
+                max_retries = 3
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        # Process the download
+                        download_task = asyncio.create_task(
+                            self._process_download(task)
+                        )
+                        self.active_downloads[task.attachment_id] = download_task
+                        
+                        success = await download_task
+                        if success:
+                            # Mark as completed if successful
+                            self.completed_downloads.add(task.attachment_id)
+                            logger.debug(f"Download completed successfully: {task.attachment_name} - {self.get_status()}")
+                            break  # Exit retry loop on success
                         else:
-                            logger.info(f"All downloads completed successfully - {status}")
+                            # Only mark as failed if actually failed
+                            self.failed_downloads.add(task.attachment_id)
+                            logger.debug(f"Download failed: {str(task.file_path)[11:]} {task.attachment_name} - {self.get_status()}")
+                            break  # Exit retry loop on failure that's not a cancellation
+
+                    except asyncio.CancelledError:
+                        retry_count += 1
+                        wait_time = 5 * (2 ** retry_count)  # Exponential backoff: 10s, 20s, 40s
+                        
+                        # Enhanced logging for cancelled downloads with retry info
+                        admin_urls = format_admin_urls(
+                            course_info={
+                                'course_id': task.course_id,
+                                'course_name': task.course_name,
+                                'module_id': task.module_id,
+                                'module_name': task.module_name,
+                                'lecture_id': task.lecture_id,
+                                'lecture_name': task.lecture_name,
+                                'attachment_id': task.attachment_id,
+                                'attachment_kind': task.attachment_kind
+                            },
+                            attachment_id=task.attachment_id,
+                            attachment_kind=task.attachment_kind,
+                            url=task.url
+                        )
+                        
+                        if retry_count < max_retries:
+                            logger.warning(
+                                f"Download cancelled for {str(task.file_path)[11:]} {task.attachment_name} - "
+                                f"Retrying in {wait_time}s (Attempt {retry_count}/{max_retries})"
+                            )
+                            for url_line in admin_urls.split('\n'):
+                                logger.debug(url_line)
+                            
+                            try:
+                                await asyncio.sleep(wait_time)
+                            except asyncio.CancelledError:
+                                logger.warning("Retry wait interrupted, proceeding with next attempt immediately")
+                            continue
+                        else:
+                            # Log final failure after all retries
+                            logger.error(
+                                f"Download permanently cancelled for {str(task.file_path)[11:]} {task.attachment_name} "
+                                f"after {max_retries} attempts"
+                            )
+                            for url_line in admin_urls.split('\n'):
+                                logger.error(url_line)
+                            self.failed_downloads.add(task.attachment_id)
+                            break
+
+                    except Exception as e:
+                        logger.error(f"Error downloading {task.attachment_name}: {e} - {self.get_status()}")
+                        self.failed_downloads.add(task.attachment_id)
+                        break
+
+                # After all retries or successful download
+                self.queue.task_done()
+                status = self.get_status()
+                logger.debug(f"Task completed - {status}")
+
+                if self.queue.empty() and not self.active_downloads:
+                    if self.failed_downloads:
+                        logger.error(f"All downloads completed with some failures - {status}")
+                    else:
+                        logger.info(f"All downloads completed successfully - {status}")
 
             except asyncio.CancelledError:
                 if task:
