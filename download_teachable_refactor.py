@@ -682,21 +682,28 @@ async def download_file(
                     
                     try:
                         with open(output_path, "wb") as out_file:
-                            chunk_size = 16 * 1024 * 1024  # 16MB chunks
+                            chunk_size = 8 * 1024 * 1024  # 8MB instead of 16MB
                             downloaded = 0
                             
-                            logger.info(f"Downloading {format_filename_for_log(file_path.name)} "
-                                      f"({file_size / (1024*1024):.2f} MB)")
-                            
+                            logger.info(
+                                f"Downloading {format_filename_for_log(file_path.name)} "
+                                f"({file_size / (1024*1024):.2f} MB)"
+                            )
+                            last_log_time = time.time()
+
                             async for chunk in response.content.iter_chunked(chunk_size):
                                 if not chunk:
                                     break
                                 out_file.write(chunk)
                                 downloaded += len(chunk)
-                                if file_size:
-                                    progress = (downloaded / file_size) * 100
-                                    if downloaded % (50 * 1024 * 1024) == 0:  # Log every 50MB
-                                        logger.debug(f"{progress:.1f}%")
+
+                                # Log progress every 10 seconds or every chunk if <10s
+                                now = time.time()
+                                if now - last_log_time >= 10:
+                                    if file_size:
+                                        progress = (downloaded / file_size) * 100
+                                        logger.debug(f"Progress: {progress:.1f}% for {format_filename_for_log(file_path.name)}")
+                                    last_log_time = now
 
                             # Ensure all data is written to disk
                             out_file.flush()
@@ -782,7 +789,9 @@ class DownloadManager:
     """Centralized download manager for handling concurrent downloads"""
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_DOWNLOADS):
         self.queue: Queue[DownloadTask] = Queue()
-        self.semaphore = asyncio.Semaphore(max_concurrent)
+        self.max_concurrent = max_concurrent
+        self.current_concurrent = max_concurrent
+        self.semaphore = asyncio.Semaphore(self.current_concurrent)
         self.active_downloads: Dict[int, asyncio.Task] = {}
         self._stop = False
         self._consumers: List[asyncio.Task] = []
@@ -791,6 +800,7 @@ class DownloadManager:
         self.completed_downloads: Set[int] = set()  # Track successful downloads
         self._active_count = 0
         self.failures: List[DownloadFailure] = []
+        self.consecutive_successes: int = 0  # track consecutive successful downloads
 
     def get_status(self) -> str:
         """Returns current download manager status"""
@@ -845,6 +855,25 @@ class DownloadManager:
             for i in range(num_consumers)
         ]
 
+    def reduce_concurrency_to_one(self) -> None:
+        """
+        Temporarily reduce concurrency to 1.
+        Resets the current semaphore to a single slot.
+        """
+        self.current_concurrent = 1
+        self.semaphore = asyncio.Semaphore(self.current_concurrent)
+        self.consecutive_successes = 0
+        logger.warning("Reduced concurrency to 1 due to cancelled download.")
+
+    def restore_max_concurrency_if_ready(self) -> None:
+        """
+        If we have at least 2 consecutive successes, restore concurrency to the original max.
+        """
+        if self.current_concurrent < self.max_concurrent and self.consecutive_successes >= 2:
+            self.current_concurrent = self.max_concurrent
+            self.semaphore = asyncio.Semaphore(self.current_concurrent)
+            logger.warning(f"Restored concurrency to max ({self.max_concurrent}).")
+
     async def _consumer_worker(self, worker_id: str) -> None:
         """Worker that processes download tasks from the queue"""
         while not self._stop:
@@ -866,29 +895,35 @@ class DownloadManager:
                 retry_count = 0
                 while retry_count < max_retries:
                     try:
-                        # Process the download
                         download_task = asyncio.create_task(
                             self._process_download(task)
                         )
                         self.active_downloads[task.attachment_id] = download_task
-                        
+
                         success = await download_task
                         if success:
-                            # Mark as completed if successful
                             self.completed_downloads.add(task.attachment_id)
-                            logger.debug(f"Download completed successfully: {task.attachment_name} - {self.get_status()}")
-                            break  # Exit retry loop on success
+                            self.consecutive_successes += 1  # increment on success
+                            # Try restoring concurrency if we had reduced it
+                            self.restore_max_concurrency_if_ready()
+
+                            logger.debug(
+                                f"Download completed successfully: {task.attachment_name} - {self.get_status()}"
+                            )
+                            break
                         else:
-                            # Only mark as failed if actually failed
                             self.failed_downloads.add(task.attachment_id)
-                            logger.debug(f"Download failed: {str(task.file_path)[11:]} {task.attachment_name} - {self.get_status()}")
-                            break  # Exit retry loop on failure that's not a cancellation
+                            logger.debug(
+                                f"Download failed: {str(task.file_path)[11:]} {task.attachment_name} - {self.get_status()}"
+                            )
+                            break
 
                     except asyncio.CancelledError:
+                        # reduce concurrency and reset success count
+                        self.reduce_concurrency_to_one()
+
                         retry_count += 1
-                        wait_time = 5 * (2 ** retry_count)  # Exponential backoff: 10s, 20s, 40s
-                        
-                        # Enhanced logging for cancelled downloads with retry info
+                        wait_time = 5 * (2 ** retry_count)
                         admin_urls = format_admin_urls(
                             course_info={
                                 'course_id': task.course_id,
@@ -904,7 +939,6 @@ class DownloadManager:
                             attachment_kind=task.attachment_kind,
                             url=task.url
                         )
-                        
                         if retry_count < max_retries:
                             logger.warning(
                                 f"Download cancelled for {str(task.file_path)[11:]} {task.attachment_name} - "
@@ -912,14 +946,12 @@ class DownloadManager:
                             )
                             for url_line in admin_urls.split('\n'):
                                 logger.debug(url_line)
-                            
                             try:
                                 await asyncio.sleep(wait_time)
                             except asyncio.CancelledError:
                                 logger.warning("Retry wait interrupted, proceeding with next attempt immediately")
                             continue
                         else:
-                            # Log final failure after all retries
                             logger.error(
                                 f"Download permanently cancelled for {str(task.file_path)[11:]} {task.attachment_name} "
                                 f"after {max_retries} attempts"
@@ -934,7 +966,6 @@ class DownloadManager:
                         self.failed_downloads.add(task.attachment_id)
                         break
 
-                # After all retries or successful download
                 self.queue.task_done()
                 status = self.get_status()
                 logger.debug(f"Task completed - {status}")
@@ -1068,33 +1099,34 @@ class DownloadManager:
         print("\n" + "=" * 80)
 
     async def wait_for_downloads(self) -> None:
-        """Wait for all queued downloads to complete"""
-        if self.queue.empty() and not self.active_downloads:
-            logger.debug("No downloads to wait for")
-            return
-
-        try:
-            await asyncio.wait_for(self.queue.join(), timeout=30)
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout waiting for downloads to complete - {self.get_status()}")
-            self._stop = True
-
-        # Clean up any remaining active downloads
-        active_tasks = [task for task in self.active_downloads.values() if not task.done()]
-        if active_tasks:
-            logger.warning(f"Cancelling {len(active_tasks)} remaining downloads")
-            for task in active_tasks:
-                task.cancel()
-            
+        """
+        Wait for all queued downloads to complete, including retries.
+        Modified to keep waiting while new tasks are spawned.
+        """
+        while True:
+            # Wait for queue to be empty
+            queue_empty_task = asyncio.create_task(self.queue.join())
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*active_tasks, return_exceptions=True),
-                    timeout=10
-                )
+                await asyncio.wait_for(queue_empty_task, timeout=30)
             except asyncio.TimeoutError:
-                logger.warning("Timeout waiting for active downloads to cancel")
+                logger.warning(f"Timeout waiting for queue tasks - {self.get_status()}")
+                # If not done, we can reduce concurrency or keep waiting
+                continue
 
-        # Final cleanup
+            # Check for active downloads
+            active_tasks = [t for t in self.active_downloads.values() if not t.done()]
+            if active_tasks:
+                logger.warning(f"Waiting for {len(active_tasks)} active downloads to finish...")
+                # Attempt to gather them with a small timeout
+                try:
+                    await asyncio.wait_for(asyncio.gather(*active_tasks, return_exceptions=True), timeout=30)
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for active downloads - possibly retry logic. Continuing to wait.")
+                continue
+
+            # If we get here, queue is empty and no active tasks remain
+            break
+
         self.active_downloads.clear()
         if self.failed_downloads:
             logger.info(f"Download manager completed with some failures - {self.get_status()}")
