@@ -1083,24 +1083,25 @@ async def process_course(
         cover_filename = f"{course_id} - {safe_filename(course_name)} - Cover{ext}"
         cover_path = course_dir / cover_filename
         
-        # Queue the cover image download
-        download_task = DownloadTask(
-            url=image_url,
-            file_path=cover_path,
-            course_id=course_id,
-            lecture_id=0,  # Not applicable for cover image
-            attachment_id=0,  # Not applicable for cover image
-            attachment_name="Course Cover",
-            attachment_kind="image",
-            file_size=None,
-            course_name=course_name,
-            module_id=None,
-            module_name=None,
-            lecture_name=None
-        )
-        task = asyncio.create_task(download_manager.add_task(download_task))
-        download_tasks.add(task)
-        logger.info(f"Queued download of course cover image: {cover_filename}")
+        if not cover_path.exists():
+            # Queue the cover image download
+            download_task = DownloadTask(
+                url=image_url,
+                file_path=cover_path,
+                course_id=course_id,
+                lecture_id=0,  # Not applicable for cover image
+                attachment_id=0,  # Not applicable for cover image
+                attachment_name="Course Cover",
+                attachment_kind="image",
+                file_size=None,
+                course_name=course_name,
+                module_id=None,
+                module_name=None,
+                lecture_name=None
+            )
+            task = asyncio.create_task(download_manager.add_task(download_task))
+            download_tasks.add(task)
+            logger.info(f"Queued download of course cover image: {cover_filename}")
 
     # Backup existing CSV
     course_data_path = course_dir / "course_data.csv"
