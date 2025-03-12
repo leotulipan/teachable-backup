@@ -2,13 +2,10 @@
 
 **Teachable Backup Script**
 
-## To-Dos
-
- - Failure Log
-    ```fgrep -v "handle_rate_limit:306" download_teachable_2025-02-04.log|fgrep -v "process_course:1022" |fgrep -v "get_all_courses:" |fgrep -v "process_course:1012"|fgrep -v "backup_existing_file" > failure-filtered.log```
-
 
 ## Prerequisites
+
+- You need a Teachable PRO account or above (with API feature enabled). The Basic account does not have API active. But you only need to commit to one month prior to doing these backups and then you can potentially downgrade or cancel
 
 - uv version 0.5 or later. Install instructions [here](https://docs.astral.sh/uv/getting-started/installation/)
 
@@ -19,17 +16,6 @@ uv self update
 # activate venv
 uv venv
 ```
-
-## Folder Structure
-
-workspace_root/
-├── .cursorrules
-└── teachable/
-    ├── .venv/
-    ├── README.md
-    ├── pyproject.toml
-    ├── uv.lock
-    └── download_teachable_courses.py
 
 #### **Purpose**
 
@@ -43,7 +29,7 @@ The script is designed to interact with the Teachable API to:
 
 1. **Configuration and Setup:**
    - **Environment Variables:** Utilizes the `dotenv` library to securely load the Teachable API key (`API_KEY`) from a `.env` file, ensuring sensitive information is not hard-coded.
-   - **Working Directory Management:** Changes the current working directory to the script’s directory to ensure all file operations are relative to the script's location.
+   - **Working Directory Management:** Changes the current working directory to the script's directory to ensure all file operations are relative to the script's location.
 
 2. **API Interaction:**
    - **Base URL:** Interacts with the Teachable API using the base URL `https://developers.teachable.com/v1`.
@@ -120,31 +106,31 @@ The script is designed to interact with the Teachable API to:
      - **Fetch Course Data and Save to CSV:**
 
        ```bash
-       python download_teachable_courses.py
+       uv run download_teachable_courses.py
        ```
 
      - **Fetch Specific Course and Section:**
 
        ```bash
-       python download_teachable_courses.py --course "Your Course Name" --section "Modul 3"
+       uv run download_teachable_courses.py --course "Your Course Name" --section "Modul 3"
        ```
 
      - **Download Attachments of Specific Types:**
 
        ```bash
-       python download_teachable_courses.py --download --types image pdf
+       uv run download_teachable_courses.py --download --types image pdf
        ```
 
      - **Download Attachments from a Specific Section:**
 
        ```bash
-       python download_teachable_courses.py --download --section "Modul 3"
+       uv run download_teachable_courses.py --download --section "Modul 3"
        ```
 
      - **Combine Type and Section Filters:**
 
        ```bash
-       python download_teachable_courses.py --download --types image pdf --section "Modul 3"
+       uv run download_teachable_courses.py --download --types image pdf --section "Modul 3"
        ```
 
 8. **File Naming Convention:**
@@ -164,7 +150,7 @@ The script is designed to interact with the Teachable API to:
 9. **Script Execution Flow:**
    - **Initialization:**
      - Loads environment variables and sets up headers.
-     - Changes the working directory to the script’s location.
+     - Changes the working directory to the script's location.
    - **Argument Parsing:**
      - Parses command-line arguments to determine whether to fetch data or download attachments.
    - **Action Execution:**
@@ -242,35 +228,57 @@ uv run .\download_teachable_courses.py --id 42303 --overwrite_course_csv --downl
 - **Fetch and Save All Course Data:**
 
   ```bash
-  python download_teachable_courses.py
+  uv run download_teachable_courses.py
   ```
 
 - **Fetch and Save Data for a Specific Section:**
 
   ```bash
-  python download_teachable_courses.py --course "Fachausbildung zum Coach für Ketogene Ernährung" --section "Modul 3"
+  uv run download_teachable_courses.py --course "Fachausbildung zum Coach für Ketogene Ernährung" --section "Modul 3"
   ```
 
 - **Download All Types of Attachments:**
 
   ```bash
-  python download_teachable_courses.py --download
-  ```
-
-- **Download Specific Types of Attachments (e.g., Images and PDFs):**
-
-  ```bash
-  python download_teachable_courses.py --download --types image pdf
-  ```
-
-- **Download Attachments from a Specific Section:**
-
-  ```bash
-  python download_teachable_courses.py --download --section "Modul 3"
+  uv run download_teachable_courses.py --download
   ```
 
 - **Combine Type and Section Filters:**
 
   ```bash
-  python download_teachable_courses.py --download --types image pdf --section "Modul 3"
+  uv run download_teachable_courses.py --download --types image pdf --section "Modul 3"
   ```
+
+## Additional Tools
+
+### create_mindmap.py
+
+This script helps generate mind maps (in FreeMind XML, XMind XML, and Mermaid formats) out of your course_data.csv files. It:
+- Recursively searches for "course_data.csv" throughout a specified root directory.
+- Reads CSV data (as generated by download_teachable_courses.py).
+- Builds structured mind maps for easy visual reference of courses, sections, and lectures.
+- Can produce:
+  - A FreeMind-compatible .mm file
+  - An XMind XML file
+  - A Mermaid mindmap diagram (commented out in the script)  
+Usage example:
+  
+```bash
+uv run create_mindmap.py
+# By default, modifies or generates 'freemind_output.mm' in your working directory.
+```
+
+### users2mentortools.py
+
+This script converts Teachable user data (from "users.ndjson") into a CSV that can be imported into MentorTools. Key points:
+- Reads "users.ndjson" from a specified directory (generated via the Teachable "get-users" command in download_teachable_courses.py).
+- Filters out users who have a certain role (e.g., "student") and are enrolled in a particular course ID.
+- Outputs a semicolon-delimited CSV with columns for email, first name, last name, course, billing type, and enrollment/purchase date.
+- Also supports printing admin URLs for users enrolled after a certain date.
+
+Usage example:
+
+```bash
+uv run users2mentortools.py -i path/to/users_ndjson_dir -c 12345 \
+  --mentor_tool_courses "My Mentor Package"
+```
