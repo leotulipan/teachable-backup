@@ -286,6 +286,10 @@ Note: output csv gets the current date added to the name and is saved at the inp
 
 ```bash
 uv run .\users2mentortools.py -i "path/to/users_ndjson_dir" --course_id 249837 --admin-url-start-date 2024-09-01 --mentor_tool_courses "55419 55793 55794 56306"
-````
+```
 
 Note: Lists the Teachable Admin URL path for each user (to see their progress)
+
+To Import your userlist go to https://<yoururl>.app.mentortools.com/ng/admin/orders
+- CSV Import Button at the bottom
+- You can also find an import history behind that button
