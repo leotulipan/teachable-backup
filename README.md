@@ -279,6 +279,13 @@ This script converts Teachable user data (from "users.ndjson") into a CSV that c
 Usage example:
 
 ```bash
-uv run users2mentortools.py -i path/to/users_ndjson_dir -c 12345 \
-  --mentor_tool_courses "My Mentor Package"
+uv run users2mentortools.py -i "path/to/users_ndjson_dir" --course_id 249837 --mentor_tool_courses "55419 55793 55794 56306"
 ```
+
+Note: output csv gets the current date added to the name and is saved at the input path
+
+```bash
+uv run .\users2mentortools.py -i "path/to/users_ndjson_dir" --course_id 249837 --admin-url-start-date 2024-09-01 --mentor_tool_courses "55419 55793 55794 56306"
+````
+
+Note: Lists the Teachable Admin URL path for each user (to see their progress)

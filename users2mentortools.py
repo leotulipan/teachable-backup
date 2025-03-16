@@ -244,7 +244,7 @@ def main() -> None:
     parser.add_argument(
         "-m", "--mentor_tool_courses",
         required=False,  # Changed to False since it's only needed for CSV output
-        help="String to use for the 'courses' field in the CSV output."
+        help="String to use for the 'courses' field in the CSV output. Space delimited list of course IDs inside mentor-tools the student has access to."
     )
     parser.add_argument(
         "--admin-url-start-date",
